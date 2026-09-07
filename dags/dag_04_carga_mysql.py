@@ -37,9 +37,11 @@ from datetime import datetime
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from comun import config, observabilidad, repositorio, transformaciones, utilidades, zonas
 
+DAG_SIGUIENTE = "dag_05_conciliacion"
 COMPONENTE = "dag_04_carga_mysql"
 
 ARCHIVO_CATALOGO = "catalogo_activos.csv"
@@ -289,7 +291,20 @@ with DAG(
         python_callable=cerrar_carga,
     )
 
+    disparar_05 = TriggerDagRunOperator(
+        task_id="disparar_dag_05",
+        trigger_dag_id=DAG_SIGUIENTE,
+        conf={"lote_id": "{{ ti.xcom_pull(task_ids='cargar_dimension', key='lote_id') }}"},
+        trigger_run_id="lote_{{ ti.xcom_pull(task_ids='cargar_dimension', key='lote_id') }}",
+        wait_for_completion=True,
+        poke_interval=config.INTERVALO_ESPERA_TRIGGER,
+        allowed_states=["success"],
+        failed_states=["failed"],
+        reset_dag_run=True,
+        retries=0,
+    )
+
     # La dimension va antes que los hechos: la clave foranea lo exige.
     # La verificacion y la exportacion son independientes entre si y corren en
     # paralelo; ambas necesitan que los hechos ya esten cargados.
-    dimension >> hechos >> [verificar, exportar] >> cierre
+    dimension >> hechos >> [verificar, exportar] >> cierre >> disparar_05

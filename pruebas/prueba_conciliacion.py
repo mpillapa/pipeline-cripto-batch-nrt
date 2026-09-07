@@ -19,6 +19,8 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RAIZ, "dags"))
 os.environ.setdefault("CRIPTO_DIR_DATOS", os.path.join(RAIZ, "datos"))
 
+import requests  # noqa: E402
+
 from comun import conciliacion, config  # noqa: E402
 
 fallos = []
@@ -250,6 +252,45 @@ comprobar(
 
 comprobar("un conjunto vacio no revienta",
           conciliacion.resumir([])["horas"] == 0)
+
+
+
+# ---------------------------------------------------------------------------
+titulo("[8] Elasticsearch caido se distingue de Elasticsearch sin datos")
+# ---------------------------------------------------------------------------
+# Es la diferencia que evita que el camino batch se ponga en rojo porque la otra
+# mitad del pipeline no este levantada. El DAG 04 dispara al 05 con
+# wait_for_completion, asi que un fallo aqui arrastraria a toda la cadena.
+
+# Se apunta a un puerto donde no hay nada escuchando.
+try:
+    conciliacion.consultar_metricas_nrt(
+        "BTCUSDT", "2026-09-07T00:00:00Z", "2026-09-08T00:00:00Z",
+        url_base="http://127.0.0.1:59999",
+    )
+    comprobar("Elasticsearch inalcanzable lanza FlujoNrtNoDisponible", False,
+              "no lanzo ninguna excepcion")
+except conciliacion.FlujoNrtNoDisponible:
+    comprobar("Elasticsearch inalcanzable lanza FlujoNrtNoDisponible", True)
+except Exception as error:
+    comprobar(
+        "Elasticsearch inalcanzable lanza FlujoNrtNoDisponible", False,
+        "lanzo " + type(error).__name__ + " en su lugar, que el DAG 05 no "
+        "captura y haria fallar la cadena entera",
+    )
+
+comprobar(
+    "FlujoNrtNoDisponible es distinguible de un error cualquiera",
+    issubclass(conciliacion.FlujoNrtNoDisponible, RuntimeError)
+    and conciliacion.FlujoNrtNoDisponible is not RuntimeError,
+)
+
+comprobar(
+    "un error HTTP que no sea 404 no se disfraza de 'sin datos'",
+    issubclass(requests.HTTPError, requests.RequestException),
+    "un 400 indica consulta mal formada o mapeo inesperado, y eso si debe "
+    "hacer fallar la tarea",
+)
 
 
 # ---------------------------------------------------------------------------

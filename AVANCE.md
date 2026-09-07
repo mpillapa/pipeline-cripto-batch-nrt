@@ -65,7 +65,7 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 | `dag_02_calidad` | LISTO | Bifurcación promover/bloquear, cuarentena con motivo |
 | `dag_03_transformacion` | LISTO | Sensor + transformación + verificación de la zona plata |
 | `dag_04_carga_mysql` | LISTO | Carga idempotente + exportación NDJSON para Logstash |
-| `dag_05_conciliacion` | PENDIENTE | Solo falta el DAG: la lógica está en `comun/conciliacion.py`, escrita y probada contra una respuesta de Elasticsearch simulada |
+| `dag_05_conciliacion` | LISTO | Corre y termina en `success` aunque el flujo NRT no exista todavía. Empezará a producir filas sin ningún cambio de código |
 | `datos_semilla/catalogo_activos.csv` | LISTO | Diez activos con nombre y categoría |
 | `docs/REGLAS_NEGOCIO.md` | LISTO | R01–R08, T01–T03, fórmulas, supuestos y parámetros |
 | `README.md` | LISTO | Marca explícitamente lo que aún no existe |
@@ -99,14 +99,19 @@ El camino batch corrió **de punta a punta con datos reales**, dos veces.
 | Zonas en disco | bronce, plata, cuarentena y exportado, con Parquet y NDJSON |
 | **Segunda corrida del mismo día** | Los cuatro DAGs en `success` |
 | **Idempotencia** | **1092 filas tras dos corridas, no 2184** |
+| DAG 05 sin flujo NRT levantado | `success` con 0 horas y el motivo en el reporte |
+| **Rama de bloqueo del DAG 02** | `bloquear_lote` en `success`, `promover_lote` y `disparar_dag_03` en `skipped`, cadena detenida |
+| Cuarentena del lote bloqueado | 259 de 600 filas apartadas, tasa 43,17 %, `cuarentena.parquet` en disco |
+| Reglas disparadas por los defectos inyectados | R01: 48, R02: 150, R03: 112, R04: 53, R07: 56 |
+| Bitácora `control_lotes` | Tres estados distintos: `CARGADO`, `CONCILIADO`, `BLOQUEADO` |
 
 La clasificación de volatilidad produce además una distribución coherente sin haber sido
 calibrada contra estos datos: BTC no tiene ningún día `ALTA`, mientras que ETH y SOL sí
 (28 y 47 días respectivamente). Los cortes de `config.py` resultan razonables tal como
-estaban.
+estaban, y se eligieron antes de ver los datos.
 
-Falta por probar en el entorno: la rama de bloqueo del DAG 02 (necesita
-`forzar_sintetico` con `tasa_defectos` alta) y todo lo que depende del flujo NRT.
+**El camino batch está completo y probado en las dos ramas.** Lo único que falta por
+verificar es lo que depende del flujo NRT: que la conciliación produzca filas reales.
 
 ---
 
@@ -157,6 +162,37 @@ enchufa después, contra un pipeline que ya funciona.
 ---
 
 ## 5. Bitácora de hallazgos y decisiones
+
+### 2026-09-06 · El DAG 05 tumbaba toda la cadena batch si Elasticsearch no estaba
+
+**Cómo apareció.** Ejecutando el DAG 05 recién escrito, con el flujo NRT todavía
+inexistente. Los tres `conciliar_<simbolo>` fallaron y arrastraron al resto del DAG.
+
+**Causa.** `consultar_metricas_nrt` trataba igual dos situaciones distintas: que el índice
+no exista todavía (404, devolvía vacío) y que Elasticsearch no responda (excepción de
+conexión, lanzaba `RuntimeError`).
+
+**Por qué era grave y no un detalle de la prueba.** El DAG 04 dispara al 05 con
+`wait_for_completion=True`. Un fallo en el 05 hace fallar al 04, que hace fallar al 03, y
+así hasta el 01. **Todo el pipeline batch se pondría en rojo porque la otra mitad del
+proyecto no está corriendo**, que es algo que no le corresponde. Y peor: pasaría cada vez
+que Estéfano reiniciara su stack.
+
+**Solución.** Tres situaciones, tres tratamientos:
+
+| Situación | Qué significa | Qué se hace |
+|---|---|---|
+| 404 | El flujo NRT existe pero no ha escrito nada | Cero horas, sigue |
+| Error de conexión | La otra mitad no está levantada | `FlujoNrtNoDisponible`, el DAG lo captura, avisa por `ops_log` y sigue |
+| Cualquier otro error HTTP | Consulta mal formada o mapeo inesperado | **Falla.** Es un defecto real y disfrazarlo de "no hay datos" lo escondería |
+
+El reporte distingue `NRT_NO_DISPONIBLE` de `SIN_METRICAS`: sin ese campo, un reporte con
+cero horas no diría si el flujo estuvo callado o si Elasticsearch estaba caído, y son dos
+problemas distintos.
+
+**Lección para el informe.** Al acoplar dos pipelines con `wait_for_completion`, hay que
+decidir explícitamente qué fallos del hijo son fallos del padre. Por defecto lo son todos,
+y casi nunca es lo que uno quiere.
 
 ### 2026-09-06 · Una función que habría comparado horas contra días
 

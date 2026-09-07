@@ -51,6 +51,21 @@ from comun import clientes_api, config, utilidades
 TIEMPO_LIMITE_ES = 30
 
 
+class FlujoNrtNoDisponible(RuntimeError):
+    """Elasticsearch no responde: el flujo near real-time no esta levantado.
+
+    Es una condicion DISTINTA de "no hay datos" y de "la consulta esta mal", y
+    por eso tiene su propio tipo.
+
+    Quien la captura es el DAG 05, que la trata como cero horas conciliadas en
+    vez de como un fallo. El motivo es concreto: el DAG 04 dispara al 05 con
+    `wait_for_completion=True`, asi que si el 05 fallara, fallaria tambien el 04
+    y la cadena entera se pondria en rojo hasta el DAG 01. El camino batch
+    quedaria roto por algo que no le corresponde: que la otra mitad del pipeline
+    no este corriendo.
+    """
+
+
 # ---------------------------------------------------------------------------
 # LADO NEAR REAL-TIME
 # ---------------------------------------------------------------------------
@@ -108,9 +123,20 @@ def consultar_metricas_nrt(simbolo, desde, hasta, url_base=None):
 
     Devuelve {hora_iso: {vwap, n_trades, ventanas, volumen_base}}.
 
-    Un indice que todavia no existe devuelve 404. Se trata como "no hay datos"
-    y no como error: es lo que pasa el primer dia, antes de que el flujo NRT
-    haya escrito nada, y no tiene sentido que el DAG falle por eso.
+    Tres situaciones que parecen la misma y no lo son:
+
+      Indice inexistente (404)   El flujo NRT esta levantado pero todavia no ha
+                                 escrito nada. No hay datos. Se devuelve vacio.
+
+      Elasticsearch no responde  La otra mitad del pipeline no esta corriendo.
+                                 Se lanza FlujoNrtNoDisponible, que el DAG 05
+                                 captura y trata como cero horas.
+
+      Cualquier otro error HTTP  La consulta esta mal formada o el mapeo del
+                                 indice no es el esperado. Eso SI es un defecto
+                                 y tiene que hacer fallar la tarea, porque no se
+                                 arregla solo y disfrazarlo de "no hay datos"
+                                 esconderia el problema.
     """
     url_base = url_base or config.ELASTICSEARCH_URL
     url = url_base.rstrip("/") + "/" + config.INDICE_METRICAS_NRT + "/_search"
@@ -120,20 +146,17 @@ def consultar_metricas_nrt(simbolo, desde, hasta, url_base=None):
             url, json=construir_consulta(simbolo, desde, hasta),
             timeout=TIEMPO_LIMITE_ES,
         )
-        if respuesta.status_code == 404:
-            print("El indice " + config.INDICE_METRICAS_NRT + " no existe todavia.")
-            return {}
-        respuesta.raise_for_status()
-        cuerpo = respuesta.json()
     except requests.RequestException as error:
-        raise RuntimeError(
-            "No se pudo consultar Elasticsearch en " + url + ": " + str(error) +
-            ". La conciliacion necesita que el flujo near real-time haya "
-            "escrito metricas; revisa que Logstash y el job de Spark esten "
-            "corriendo."
+        raise FlujoNrtNoDisponible(
+            "Elasticsearch no responde en " + url + ": " + str(error)
         )
 
-    return interpretar_respuesta(cuerpo)
+    if respuesta.status_code == 404:
+        print("El indice " + config.INDICE_METRICAS_NRT + " no existe todavia.")
+        return {}
+
+    respuesta.raise_for_status()
+    return interpretar_respuesta(respuesta.json())
 
 
 def interpretar_respuesta(cuerpo):
