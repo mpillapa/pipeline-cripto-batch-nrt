@@ -1,0 +1,339 @@
+# Entorno local del proyecto final.
+#
+# NO ES UNA ARQUITECTURA PRODUCTIVA. Credenciales en claro, sin TLS, sin gestion
+# de secretos, sin respaldos. Sirve unicamente para ejecutar el prototipo en
+# local.
+#
+# ===========================================================================
+# ESTADO: BORRADOR. Faltan los servicios de Elasticsearch, Kibana y Logstash.
+# Se completa en la sesion conjunta del Dia 1, pegando los del Taller 2 en el
+# bloque marcado mas abajo. Ver la seccion "PENDIENTE" al final del archivo.
+# ===========================================================================
+#
+# Diferencias deliberadas respecto al compose oficial de Airflow:
+#   1. LocalExecutor en vez de CeleryExecutor -> quita Redis, worker y
+#      triggerer. Tres contenedores menos. Con Elasticsearch, Kafka y Spark en
+#      la misma maquina el recurso escaso es la RAM, no el paralelismo.
+#   2. `build:` con Dockerfile propio -> dependencias instaladas una vez, no en
+#      cada arranque.
+#   3. Puertos fuera de los rangos habituales -> no chocan con los entornos de
+#      los talleres anteriores, que ocupan 8080, 8081, 3306, 3307 y 5432.
+#   4. Conexiones declaradas por variable de entorno -> sobreviven a
+#      `docker compose down -v`. Una conexion creada a mano en la UI, no.
+---
+x-airflow-comun: &airflow-comun
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  image: pipeline-cripto-airflow:2.10.4
+  environment: &airflow-comun-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+
+    # Conexion a la base analitica. El host es el nombre del SERVICIO en esta
+    # red, y el puerto el INTERNO (3306), no el publicado al host.
+    AIRFLOW_CONN_MYSQL_CRIPTO: 'mysql://${MYSQL_USER:-cripto}:${MYSQL_PASSWORD:-cripto}@mysql:3306/${MYSQL_DATABASE:-cripto}'
+
+    # Conexion de sistema de archivos para el FileSensor del DAG 03.
+    # NO se puede usar `fs_default`: esa conexion solo existe si la base se
+    # inicializa con --load-default-connections, y este compose usa
+    # _AIRFLOW_DB_MIGRATE, que no las carga. Sin esto el sensor falla con
+    # AirflowNotFoundException, y por la cadena de TriggerDagRunOperator
+    # arrastra a los DAGs 01 y 02.
+    AIRFLOW_CONN_FS_CRIPTO: '{"conn_type": "fs", "extra": {"path": "/"}}'
+
+    # Rutas y parametros que lee comun/config.py
+    CRIPTO_DIR_DATOS: /opt/airflow/datos
+    CRIPTO_DIR_SEMILLA: /opt/airflow/datos_semilla
+    CRIPTO_SIMBOLOS: ${CRIPTO_SIMBOLOS:-BTCUSDT,ETHUSDT,SOLUSDT}
+    CRIPTO_DIAS_HISTORIA: ${CRIPTO_DIAS_HISTORIA:-365}
+    CRIPTO_API_BASE: ${CRIPTO_API_BASE:-https://api.binance.com}
+
+    # Observabilidad: los DAGs publican hitos y logs a Logstash. Si Logstash no
+    # esta levantado, la publicacion falla en silencio y el DAG sigue. Ver
+    # comun/observabilidad.py.
+    CRIPTO_LOGSTASH_HTTP: http://logstash:8088
+    CRIPTO_LOGSTASH_TCP_HOST: logstash
+    CRIPTO_LOGSTASH_TCP_PUERTO: 5000
+
+    CRIPTO_ELASTICSEARCH: http://elasticsearch:9200
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./datos_semilla:/opt/airflow/datos_semilla:ro
+    # Zonas de datos. Separado de dags/ a proposito: el scheduler reescanea esa
+    # carpeta buscando codigo Python cada 30 segundos.
+    #
+    # ESTE MONTAJE ES EL UNICO ACOPLAMIENTO FISICO ENTRE LOS DOS CAMINOS.
+    # Airflow escribe aqui el NDJSON del DAG 04 y Logstash tiene que ver esta
+    # misma carpeta desde su propio contenedor.
+    - ./datos:/opt/airflow/datos
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-comun-depends
+    postgres:
+      condition: service_healthy
+    mysql:
+      condition: service_healthy
+
+services:
+
+  # =========================================================================
+  # ALMACENAMIENTO
+  # =========================================================================
+
+  # Base de metadatos de Airflow. NO es la base analitica del proyecto y no se
+  # publica al host: nadie tiene por que conectarse a ella desde fuera.
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-metadatos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks: [cripto-red]
+
+  # Base analitica: aqui aterrizan la dimension y los hechos del DAG 04.
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_cripto}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-cripto}
+      MYSQL_USER: ${MYSQL_USER:-cripto}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-cripto}
+    ports:
+      # 3308 en el host: 3306 y 3307 ya los ocupan los entornos de los
+      # talleres anteriores. Dentro de la red sigue siendo 3306.
+      - "3308:3306"
+    volumes:
+      - mysql-cripto:/var/lib/mysql
+      # El DDL se ejecuta SOLO la primera vez, cuando el volumen esta vacio.
+      # Si se modifican estos archivos despues, hay que rehacer el volumen:
+      # `docker compose down -v`.
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root_cripto}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: always
+    networks: [cripto-red]
+
+  # =========================================================================
+  # AIRFLOW  (camino batch)
+  # =========================================================================
+
+  airflow-init:
+    <<: *airflow-comun
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /fuentes/logs /fuentes/dags /fuentes/plugins /fuentes/datos
+        chown -R "${AIRFLOW_UID:-50000}:0" /fuentes/{logs,dags,plugins,datos}
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-comun-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+    volumes:
+      - .:/fuentes
+    networks: [cripto-red]
+
+  airflow-webserver:
+    <<: *airflow-comun
+    command: webserver
+    ports:
+      - "8092:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      <<: *airflow-comun-depends
+      airflow-init:
+        condition: service_completed_successfully
+    networks: [cripto-red]
+
+  airflow-scheduler:
+    <<: *airflow-comun
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      <<: *airflow-comun-depends
+      airflow-init:
+        condition: service_completed_successfully
+    networks: [cripto-red]
+
+  # Utilidad para ejecutar comandos sueltos:
+  #   docker compose run --rm airflow-cli airflow dags list
+  airflow-cli:
+    <<: *airflow-comun
+    profiles: [utilidades]
+    environment:
+      <<: *airflow-comun-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command: ["bash", "-c", "airflow"]
+    networks: [cripto-red]
+
+  # =========================================================================
+  # KAFKA  (bus compartido entre los dos caminos)
+  # =========================================================================
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    hostname: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 10s
+      retries: 10
+      start_period: 20s
+    networks: [cripto-red]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    hostname: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      # 9095 en el host para no chocar con el entorno de clase, que usa 9092.
+      - "9095:9095"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNO:PLAINTEXT,EXTERNO:PLAINTEXT
+      KAFKA_LISTENERS: INTERNO://0.0.0.0:29092,EXTERNO://0.0.0.0:9095
+      # Dos listeners y no uno: los contenedores resuelven `kafka`, pero un
+      # script que se ejecute desde Windows resuelve `localhost`. Con un solo
+      # listener, uno de los dos casos falla siempre.
+      KAFKA_ADVERTISED_LISTENERS: INTERNO://kafka:29092,EXTERNO://localhost:9095
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNO
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Los topics se crean explicitamente en el servicio kafka-init. Con la
+      # creacion automatica activada, un error de tipeo en el nombre de un
+      # topic crea uno nuevo y vacio en vez de fallar, y se pierde media hora
+      # buscando por que no llegan mensajes.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    networks: [cripto-red]
+
+  # Crea los topics y termina. Versionados aqui y no creados a mano: una
+  # particion o una retencion puesta a mano se pierde con `down -v` y nadie
+  # recuerda cual era.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # PENDIENTE Dia 1: confirmar particiones y retencion con Estefano.
+        # Ver seccion 10 del contrato de datos, puntos 2 y 3.
+        # Propuesta: 3 particiones (una por simbolo) y 24 h de retencion.
+        for topic in trades.crudo metricas.1min alertas.precio; do
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+            --topic "$$topic" --partitions 3 --replication-factor 1 \
+            --config retention.ms=86400000
+        done
+        echo "Topics existentes:"
+        kafka-topics --bootstrap-server kafka:29092 --list
+    networks: [cripto-red]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8093:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: cripto
+      KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    networks: [cripto-red]
+
+  # =========================================================================
+  # PENDIENTE - SERVICIOS DE ESTEFANO
+  # =========================================================================
+  #
+  # Aqui van, en la sesion del Dia 1:
+  #
+  #   elasticsearch    Copiar del Taller 2. Ajustar:
+  #                      - ES_JAVA_OPTS: ${ES_JAVA_OPTS}   (heap de 1 GB)
+  #                      - networks: [cripto-red]
+  #                      - healthcheck contra /_cluster/health
+  #
+  #   kibana           Copiar del Taller 2. Ajustar:
+  #                      - depends_on elasticsearch con condition: service_healthy
+  #                      - networks: [cripto-red]
+  #
+  #   logstash         Copiar del Taller 2. Ajustar:
+  #                      - LS_JAVA_OPTS: ${LS_JAVA_OPTS}
+  #                      - networks: [cripto-red]
+  #                      - MONTAR ./datos:/datos:ro   <- IMPRESCINDIBLE.
+  #                        Es la carpeta donde el DAG 04 deja el NDJSON. Sin
+  #                        este montaje, el input `file` no ve nada y la mitad
+  #                        batch nunca llega a Elasticsearch.
+  #                        Patron a vigilar: /datos/exportado/*/ohlcv.ndjson
+  #                        Ver contrato de datos, seccion 6.bis.
+  #                      - puertos 5044, 8088 y 5000 (los mismos del Taller 2)
+  #
+  #   spark-streaming  Nuevo. Imagen propia (Dockerfile.spark) con el conector
+  #                    spark-sql-kafka HORNEADO en la construccion. No usar
+  #                    --packages en tiempo de ejecucion: descarga por Ivy en
+  #                    cada arranque y exige internet. Es el riesgo numero uno
+  #                    del proyecto.
+  #                      - command: spark-submit --master local[2] ...
+  #                      - volumes: ./procesamiento_streaming:/app,
+  #                                 ./datos/checkpoints:/checkpoints
+  #                      - ports: 4040 (UI de la aplicacion)
+  #
+  #   productor        Nuevo. Contenedor Python con el productor o el simulador.
+  #
+  # =========================================================================
+
+networks:
+  cripto-red:
+    driver: bridge
+
+volumes:
+  postgres-metadatos:
+  mysql-cripto:

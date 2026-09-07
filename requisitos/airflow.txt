@@ -1,0 +1,16 @@
+# Dependencias del camino batch, sobre la imagen apache/airflow:2.10.4.
+#
+# SIN VERSIONES FIJADAS A PROPOSITO. La version la decide el archivo de
+# restricciones oficial de Airflow que usa el Dockerfile. Fijarla aqui a mano
+# entraria en conflicto con ese archivo y la construccion fallaria.
+#
+# Lo que la imagen base YA trae y por tanto no se repite aqui:
+#   pandas, requests, y la mayoria de providers comunes.
+
+# Motor de lectura y escritura de Parquet. Es lo unico que realmente falta:
+# las zonas bronce y plata son Parquet, no CSV.
+pyarrow
+
+# Conexion a MySQL. La imagen base incluye el provider, pero se declara de
+# forma explicita para que quede constancia de que el pipeline depende de el.
+apache-airflow-providers-mysql

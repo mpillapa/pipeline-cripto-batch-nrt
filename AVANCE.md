@@ -30,10 +30,12 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 
 | Entregable | Estado | Notas |
 |---|---|---|
-| Repositorio en GitHub | EN CURSO | `mpillapa/pipeline-cripto-batch-nrt`. Falta agregar a Estéfano como colaborador |
-| `docker-compose.yml` unificado | PENDIENTE | Fusionar el del Taller 2 con el de Kafka/Spark de clase |
+| Repositorio en GitHub | LISTO | `mpillapa/pipeline-cripto-batch-nrt`, con la base subida. Falta agregar a Estéfano como colaborador |
+| `docker-compose.yml` unificado | EN CURSO | **Mitad escrita y validada** con `docker compose config`: Postgres, MySQL con el DDL montado, Airflow (init, webserver, scheduler, cli), Zookeeper, Kafka, creación de topics y Kafka UI. Falta pegar Elasticsearch, Kibana, Logstash, Spark y el productor, en el bloque marcado al final del archivo |
 | `Dockerfile.spark` con conector de Kafka horneado | PENDIENTE | **Riesgo número uno del proyecto.** Verificar sin red el mismo lunes |
-| `Dockerfile.airflow` | PENDIENTE | Necesita `pyarrow` y `requests` sobre la imagen oficial |
+| `Dockerfile.airflow` | LISTO | Imagen propia con `pyarrow`, instalado contra el archivo de restricciones oficial de Airflow. Sin construir todavía |
+| `requisitos/airflow.txt` | LISTO | Sin versiones fijadas: las decide el archivo de restricciones |
+| `.env.example` | LISTO | Valores ficticios, incluidos los límites de memoria de Elasticsearch y Logstash |
 | Mapa de puertos | LISTO | Sección 5.5 del plan |
 | Conexiones de Airflow en el compose | PENDIENTE | Hacen falta dos: `mysql_cripto` y `fs_cripto`. La segunda la usa el `FileSensor` del DAG 03; **no sirve `fs_default`**, que solo existe si la base se inicializa con `--load-default-connections` |
 | Montaje de `datos_semilla/` en el contenedor | PENDIENTE | El DAG 04 lo lee desde `/opt/airflow/datos_semilla` |
@@ -131,6 +133,34 @@ enchufa después, contra un pipeline que ya funciona.
 ---
 
 ## 5. Bitácora de hallazgos y decisiones
+
+### 2026-09-06 · Decisiones tomadas al escribir el compose
+
+Quedan aquí para no volver a discutirlas y para poder justificarlas en la exposición.
+
+**Creación automática de topics desactivada** (`KAFKA_AUTO_CREATE_TOPICS_ENABLE: false`).
+Con la opción activada, un error de tipeo en el nombre de un topic crea uno nuevo y vacío
+en vez de fallar. El síntoma es un productor que publica sin error y un consumidor que no
+recibe nada, y se pierde media hora buscando el motivo. Los topics se crean explícitamente
+en el servicio `kafka-init`, versionados con sus particiones y su retención.
+
+**Dos listeners en Kafka, no uno.** Los contenedores resuelven el nombre `kafka`, pero un
+script lanzado desde Windows resuelve `localhost`. Con un solo listener anunciado, uno de
+los dos casos falla siempre. `INTERNO` en `kafka:29092` y `EXTERNO` en `localhost:9095`.
+
+**El DDL se monta en `/docker-entrypoint-initdb.d` de MySQL.** Se ejecuta solo la primera
+vez, con el volumen vacío. Es lo que hace que el esquema no requiera ningún paso manual, y
+también la razón de que modificar `sql/` después obligue a `docker compose down -v`.
+
+**Dependencias instaladas en una imagen propia, no con
+`_PIP_ADDITIONAL_REQUIREMENTS`.** Esa variable reinstala en cada arranque de cada
+contenedor, exige internet siempre y, al no fijar versiones, cada arranque puede traer una
+distinta. Es la misma lección del punto 2 del historial de correcciones del taller
+anterior.
+
+**Instalación contra el archivo de restricciones oficial de Airflow.** Sin él, pip puede
+actualizar cualquier dependencia transitiva para satisfacer un paquete nuevo, y el
+resultado típico es un Airflow que ya no arranca.
 
 Cada entrada: qué pasó, por qué pasó, qué se hizo. Es el material de la sección de
 problemas resueltos de la exposición.
