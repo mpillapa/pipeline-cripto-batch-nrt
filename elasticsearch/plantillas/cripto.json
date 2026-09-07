@@ -1,0 +1,38 @@
+{
+    "index_patterns": [
+        "cripto-*"
+    ],
+    "template": {
+        "mappings": {
+            "properties": {
+                "precio": {
+                    "type": "double"
+                },
+                "vwap": {
+                    "type": "double"
+                },
+                "volumen_usdt": {
+                    "type": "double"
+                },
+                "volumen_base": {
+                    "type": "double"
+                },
+                "cantidad": {
+                    "type": "double"
+                },
+                "importe_usdt": {
+                    "type": "double"
+                },
+                "simbolo": {
+                    "type": "keyword"
+                },
+                "tipo_fuente": {
+                    "type": "keyword"
+                },
+                "@timestamp": {
+                    "type": "date"
+                }
+            }
+        }
+    }
+}

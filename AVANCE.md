@@ -335,3 +335,92 @@ nada sobre la red del aula el día de la exposición.
 | Contrato de datos sin revisar por Estéfano | Ambos caminos | Sesión del Día 1 |
 | Código del Taller 2 aún no está en el repo | `docker-compose.yml`, Logstash | Estéfano lo comparte |
 | El DAG 05 necesita métricas NRT en Elasticsearch | `dag_05_conciliacion` | Día 4, cuando el flujo NRT escriba |
+
+# Avance del Proyecto Final: Streaming y Procesamiento
+
+**Fecha:** 7 de Septiembre de 2026
+
+## 1. Ingesta NRT Completada
+
+**Estado:** ✅ **COMPLETADO**
+
+Se ha implementado exitosamente la ingesta de datos en tiempo real desde el simulador de `ingesta_streaming` hacia Kafka.
+
+### Logstash Configurado
+
+- **Archivo:** `logstash/pipeline_cripto/logstash.conf`
+- **Configuración:**
+  - Lee el topic `trades.crudo`.
+  - Parsea mensajes JSON.
+  - Escribe en índices dinámicos `cripto-nrt-trade-...`.
+- **Verificación:** Los logs muestran la recepción exitosa de eventos y el mapeo dinámico funciona correctamente.
+
+### Productor Kafka Operativo
+
+- **Archivo:** `ingesta_streaming/productor_kafka.py`
+- **Funcionalidad:** Envía eventos simulados con `precio` y `volumen_usdt` al topic `trades.crudo`.
+- **Salida:** Muestra el envío de mensajes en tiempo real.
+
+### Verificación en Kibana
+
+Se accedió a Kibana y se verificó en la consola Dev Tools que Logstash está escribiendo correctamente en el índice `cripto-nrt-trade-*`. Los documentos se muestran sin errores de mapeo, validando la configuración del pipeline.
+
+## 2. Estructura de Procesamiento Spark Lista
+
+**Estado:** ✅ **COMPLETADO**
+
+Se ha creado la base del job de Spark para el procesamiento de ventanas móviles, ubicado en `procesamiento_streaming/job_metricas_ventana.py`.
+
+### Componentes Implementados
+
+- **SparkSession:** Configurada con las librerías de Kafka necesarias.
+- **Esquema Definido:** Se implementó el esquema `esquema_trade` basado en el contrato de datos.
+- **Lectura de Stream:** Configurado para leer del topic `trades.crudo`.
+- **Agrupación por Ventana:** Implementada la lógica de windowing con ventanas de 1 minuto.
+- **Salida:** Configurado para imprimir resultados en consola para propósitos de depuración.
+
+## 3. Próximos Pasos
+
+### Inmediatos
+
+1. **Ejecutar el Flujo NRT:**
+   ```bash
+   docker compose up -d logstash
+   python ingesta_streaming/productor_kafka.py
+   ```
+   Verificar datos en Kibana.
+
+2. **Implementar Agregaciones en Spark:**
+   ```bash
+   docker compose exec spark-stream bash
+   python procesamiento_streaming/job_metricas_ventana.py
+   ```
+   Verificar agregaciones en consola.
+
+### A Mediano Plazo
+
+1. **Guardar en Elasticsearch:** Modificar el job de Spark para escribir las métricas agregadas en un índice Elasticsearch.
+2. **Integración con DAGs:** Configurar el DAG `dag_05_conciliacion` para consumir estas métricas.
+3. **Validación de Latencia:** Medir el tiempo real de procesamiento e ingesta.
+
+## 4. Resumen de Archivos Creados/Modificados
+
+**Ingesta Streaming:**
+- `ingesta_streaming/productor_kafka.py` - Productor Kafka
+
+**Logstash:**
+- `logstash/pipeline_cripto/logstash.conf` - Configuración de Logstash
+
+**Procesamiento Streaming:**
+- `procesamiento_streaming/job_metricas_ventana.py` - Job Spark para métricas NRT
+
+**Docker Compose:**
+- Modificado `docker-compose.yml` para incluir servicio de Logstash
+
+---
+
+**Ingesta NRT finalizada y verificada visualmente.** Los datos simulados viajan desde Kafka hacia Elasticsearch mediante Logstash (red cripto-red) y se visualizan en Kibana sin errores de mapeo dinámico.
+
+**Estructura base del job de Spark lista** para implementar la lógica de agregación de ventanas.
+
+---

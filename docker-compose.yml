@@ -206,20 +206,20 @@ services:
   # =========================================================================
 
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.0
+    image: confluentinc/cp-zookeeper:7.5.0
     hostname: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      test: ["CMD-SHELL", "cub zk-ready localhost:2181 10"]
       interval: 10s
       retries: 10
       start_period: 20s
     networks: [cripto-red]
 
   kafka:
-    image: confluentinc/cp-kafka:7.3.0
+    image: confluentinc/cp-kafka:7.5.0
     hostname: kafka
     depends_on:
       zookeeper:
@@ -257,7 +257,7 @@ services:
   # particion o una retencion puesta a mano se pierde con `down -v` y nadie
   # recuerda cual era.
   kafka-init:
-    image: confluentinc/cp-kafka:7.3.0
+    image: confluentinc/cp-kafka:7.5.0
     depends_on:
       kafka:
         condition: service_healthy
@@ -291,43 +291,69 @@ services:
     networks: [cripto-red]
 
   # =========================================================================
-  # PENDIENTE - SERVICIOS DE ESTEFANO
+  # SERVICIOS DE ESTEFANO
   # =========================================================================
-  #
-  # Aqui van, en la sesion del Dia 1:
-  #
-  #   elasticsearch    Copiar del Taller 2. Ajustar:
-  #                      - ES_JAVA_OPTS: ${ES_JAVA_OPTS}   (heap de 1 GB)
-  #                      - networks: [cripto-red]
-  #                      - healthcheck contra /_cluster/health
-  #
-  #   kibana           Copiar del Taller 2. Ajustar:
-  #                      - depends_on elasticsearch con condition: service_healthy
-  #                      - networks: [cripto-red]
-  #
-  #   logstash         Copiar del Taller 2. Ajustar:
-  #                      - LS_JAVA_OPTS: ${LS_JAVA_OPTS}
-  #                      - networks: [cripto-red]
-  #                      - MONTAR ./datos:/datos:ro   <- IMPRESCINDIBLE.
-  #                        Es la carpeta donde el DAG 04 deja el NDJSON. Sin
-  #                        este montaje, el input `file` no ve nada y la mitad
-  #                        batch nunca llega a Elasticsearch.
-  #                        Patron a vigilar: /datos/exportado/*/ohlcv.ndjson
-  #                        Ver contrato de datos, seccion 6.bis.
-  #                      - puertos 5044, 8088 y 5000 (los mismos del Taller 2)
-  #
-  #   spark-streaming  Nuevo. Imagen propia (Dockerfile.spark) con el conector
-  #                    spark-sql-kafka HORNEADO en la construccion. No usar
-  #                    --packages en tiempo de ejecucion: descarga por Ivy en
-  #                    cada arranque y exige internet. Es el riesgo numero uno
-  #                    del proyecto.
-  #                      - command: spark-submit --master local[2] ...
-  #                      - volumes: ./procesamiento_streaming:/app,
-  #                                 ./datos/checkpoints:/checkpoints
-  #                      - ports: 4040 (UI de la aplicacion)
-  #
-  #   productor        Nuevo. Contenedor Python con el productor o el simulador.
-  #
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.10
+    container_name: elasticsearch_cripto
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=${ES_JAVA_OPTS}"
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    networks:
+      - cripto-red
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.17.10
+    container_name: kibana_cripto
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5602:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - cripto-red
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:7.17.10
+    container_name: logstash_cripto
+    environment:
+      - "LS_JAVA_OPTS=${LS_JAVA_OPTS}"
+    volumes:
+      - ./logstash/pipeline_cripto:/usr/share/logstash/pipeline:ro
+      - ./datos:/datos:ro
+    ports:
+      - "5044:5044"
+      - "8089:8088"
+      - "5000:5000"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - cripto-red
+  spark-streaming:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: spark-streaming
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./procesamiento_streaming:/opt/spark/work-dir
+      - ./datos/checkpoints:/opt/spark/checkpoints
+    networks:
+      - cripto-red
   # =========================================================================
 
 networks:
