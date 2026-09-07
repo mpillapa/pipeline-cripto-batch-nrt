@@ -20,7 +20,7 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 | Camino | Progreso | Comentario |
 |---|---|---|
 | Andamiaje conjunto (Día 1) | PENDIENTE | Depende de la sesión del lunes 7 |
-| Batch — Manuel | Adelantado | `comun/` y los DAGs 01–04 escritos y probados. Falta el DAG 05, que depende del flujo NRT |
+| Batch — Manuel | **Funcionando** | Corrió de punta a punta con datos reales, dos veces, con idempotencia verificada. Falta el DAG 05, que orquesta una lógica de conciliación ya escrita y probada |
 | NRT — Estéfano | PENDIENTE | Sin iniciar; se apoya en el Taller 2 |
 | Documentación | Adelantada | Plan, contrato, reglas de negocio, README y este archivo |
 
@@ -31,7 +31,7 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 | Entregable | Estado | Notas |
 |---|---|---|
 | Repositorio en GitHub | LISTO | `mpillapa/pipeline-cripto-batch-nrt`, con la base subida. Falta agregar a Estéfano como colaborador |
-| `docker-compose.yml` unificado | EN CURSO | **Mitad escrita y validada** con `docker compose config`: Postgres, MySQL con el DDL montado, Airflow (init, webserver, scheduler, cli), Zookeeper, Kafka, creación de topics y Kafka UI. Falta pegar Elasticsearch, Kibana, Logstash, Spark y el productor, en el bloque marcado al final del archivo |
+| `docker-compose.yml` unificado | EN CURSO | **Mitad escrita, levantada y verificada**: Postgres, MySQL con el DDL montado, Airflow (init, webserver, scheduler, cli), Zookeeper, Kafka, creación de topics y Kafka UI. El pipeline batch corrió dos veces con datos reales sobre este compose. Falta pegar Elasticsearch, Kibana, Logstash, Spark y el productor, en el bloque marcado al final del archivo |
 | `Dockerfile.spark` con conector de Kafka horneado | PENDIENTE | **Riesgo número uno del proyecto.** Verificar sin red el mismo lunes |
 | `Dockerfile.airflow` | LISTO | Imagen propia con `pyarrow`, instalado contra el archivo de restricciones oficial de Airflow. Sin construir todavía |
 | `requisitos/airflow.txt` | LISTO | Sin versiones fijadas: las decide el archivo de restricciones |
@@ -58,31 +58,55 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 | `comun/transformaciones.py` | LISTO | Normalización, indicadores, dimensión |
 | `comun/repositorio.py` | LISTO | Único acceso a MySQL, cargas idempotentes |
 | `comun/observabilidad.py` | LISTO | Publicación a Logstash por HTTP y TCP |
-| `comun/conciliacion.py` | PENDIENTE | Consulta agregada a Elasticsearch |
+| `comun/conciliacion.py` | LISTO | Consulta agregada a Elasticsearch, comparación y veredictos |
+| `pruebas/prueba_conciliacion.py` | LISTO | 7 bloques, 30 comprobaciones, con respuesta de Elasticsearch simulada |
 | `pruebas/prueba_logica_batch.py` | LISTO | 12 bloques, 42 comprobaciones, todas pasan |
 | `dag_01_ingesta_batch` | LISTO | Una tarea de descarga por símbolo, en paralelo |
 | `dag_02_calidad` | LISTO | Bifurcación promover/bloquear, cuarentena con motivo |
 | `dag_03_transformacion` | LISTO | Sensor + transformación + verificación de la zona plata |
 | `dag_04_carga_mysql` | LISTO | Carga idempotente + exportación NDJSON para Logstash |
-| `dag_05_conciliacion` | PENDIENTE | Necesita que el flujo NRT esté escribiendo |
+| `dag_05_conciliacion` | PENDIENTE | Solo falta el DAG: la lógica está en `comun/conciliacion.py`, escrita y probada contra una respuesta de Elasticsearch simulada |
 | `datos_semilla/catalogo_activos.csv` | LISTO | Diez activos con nombre y categoría |
 | `docs/REGLAS_NEGOCIO.md` | LISTO | R01–R08, T01–T03, fórmulas, supuestos y parámetros |
 | `README.md` | LISTO | Marca explícitamente lo que aún no existe |
 | `.gitignore` | LISTO | Ignora zonas de datos, `__pycache__`, `.env` y artefactos |
 
-**Verificado hasta ahora, sin Airflow:**
+**Verificado sin infraestructura:**
 
 | Comprobación | Resultado |
 |---|---|
-| Sintaxis de los 14 archivos Python | Compilan |
 | `pruebas/prueba_logica_batch.py` | 42 de 42 |
+| `pruebas/prueba_conciliacion.py` | 30 de 30 |
 | Flujo bronce → cuarentena → plata sobre Parquet real | Correcto |
 | Tipos y precisión tras el viaje a Parquet | `float64`, `int64`, `str`; precio de 8 decimales idéntico |
 | Nulos convertidos a `None` para MySQL | Correcto |
 | API pública desde la red del equipo | Responde con datos reales |
 
-Los DAGs solo tienen verificada la sintaxis: importarlos exige Airflow, que solo existe
-dentro del contenedor. Se prueban de verdad el Día 2.
+**Verificado con el entorno levantado — 6 de septiembre:**
+
+El camino batch corrió **de punta a punta con datos reales**, dos veces.
+
+| Comprobación | Resultado |
+|---|---|
+| Construcción de la imagen de Airflow | Correcta |
+| `airflow dags list-import-errors` | Sin errores |
+| DAGs detectados | Los cuatro |
+| DDL ejecutado sin pasos manuales | Las cuatro tablas creadas al arrancar MySQL |
+| Conexiones `mysql_cripto` y `fs_cripto` | Resuelven desde las variables de entorno |
+| Pipeline encadenado 01 → 02 → 03 → 04 | Los cuatro DAGs en `success` |
+| Datos cargados | 1092 velas, 3 activos, 364 días por símbolo |
+| Calidad sobre datos reales | 1092 evaluadas, 0 rechazadas, tasa 0,00 % |
+| Zonas en disco | bronce, plata, cuarentena y exportado, con Parquet y NDJSON |
+| **Segunda corrida del mismo día** | Los cuatro DAGs en `success` |
+| **Idempotencia** | **1092 filas tras dos corridas, no 2184** |
+
+La clasificación de volatilidad produce además una distribución coherente sin haber sido
+calibrada contra estos datos: BTC no tiene ningún día `ALTA`, mientras que ETH y SOL sí
+(28 y 47 días respectivamente). Los cortes de `config.py` resultan razonables tal como
+estaban.
+
+Falta por probar en el entorno: la rama de bloqueo del DAG 02 (necesita
+`forzar_sintetico` con `tasa_defectos` alta) y todo lo que depende del flujo NRT.
 
 ---
 
@@ -133,6 +157,35 @@ enchufa después, contra un pipeline que ya funciona.
 ---
 
 ## 5. Bitácora de hallazgos y decisiones
+
+### 2026-09-06 · Una función que habría comparado horas contra días
+
+**Cómo apareció.** Al escribir `comun/conciliacion.py`. En `repositorio.py` existía una
+función `velas_horarias(simbolo, desde, hasta)`, escrita pensando en el DAG 05.
+
+**El problema.** Consultaba `hechos_ohlcv_diario`, que es una tabla **diaria** por diseño.
+Habría devuelto velas diarias con nombre de horarias, y la conciliación habría comparado
+el VWAP de **una hora** contra el cierre de **un día entero**. Sin ningún error: solo un
+número de desviación plausible que no significa nada. Es el peor tipo de defecto, porque
+el resultado se ve bien.
+
+**Solución.** La referencia horaria se descarga en el momento
+(`conciliacion.obtener_referencia_batch`) y **no se persiste**. La conciliación solo cubre
+las pocas horas en que el flujo NRT estuvo corriendo, así que no hace falta guardarlas, y
+mezclar dos granularidades en una tabla de hechos es la forma más rápida de que un conteo
+posterior salga mal sin que nadie lo note. La función se conserva lanzando
+`NotImplementedError` con el motivo, para que si alguien la busca encuentre la explicación
+en vez del hueco.
+
+**Detalle que salió gratis.** El VWAP horario ponderado por volumen no necesita ninguna
+fórmula especial ni un script en Elasticsearch:
+
+    vwap_hora = suma(volumen_usdt) / suma(volumen_base)
+
+porque `volumen_usdt` de cada ventana ya es suma(precio × cantidad) y `volumen_base` es
+suma(cantidad). Dos sumas simples y una división. Promediar los 60 valores de `vwap` sin
+ponderar habría sido incorrecto: daría el mismo peso a un minuto con dos operaciones que a
+uno con dos mil.
 
 ### 2026-09-06 · Decisiones tomadas al escribir el compose
 
