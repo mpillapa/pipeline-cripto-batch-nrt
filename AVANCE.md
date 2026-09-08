@@ -119,15 +119,17 @@ verificar es lo que depende del flujo NRT: que la conciliación produzca filas r
 
 | Entregable | Estado | Notas |
 |---|---|---|
-| `ingesta_streaming/simulador_trades.py` | PENDIENTE | Obligatorio, no opcional |
-| `ingesta_streaming/productor_kafka.py` | PENDIENTE | Con caída al simulador si no hay red |
-| Topics de Kafka | PENDIENTE | Creados por el compose, no a mano |
-| `procesamiento_streaming/job_metricas_ventana.py` | PENDIENTE | **Pieza nueva. En pareja el Día 3** |
-| `procesamiento_streaming/reglas_alertas.py` | PENDIENTE | |
-| `logstash/pipeline/logstash.conf` | PENDIENTE | Extensión del Taller 2 con tres inputs de Kafka |
-| Plantillas de índice | PENDIENTE | |
-| Tableros de Kibana | PENDIENTE | Exportados como NDJSON, no creados a mano |
-| `pruebas/prueba_latencia.py` | PENDIENTE | |
+| `ingesta_streaming/simulador_trades.py` | LISTO | Obligatorio, no opcional |
+| `ingesta_streaming/productor_kafka.py` | LISTO | Con caída al simulador si no hay red |
+| Topics de Kafka | LISTO | Creados por el compose, no a mano |
+| `procesamiento_streaming/job_metricas_ventana.py` | LISTO | **Pieza nueva. En pareja el Día 3** |
+| `procesamiento_streaming/reglas_alertas.py` | LISTO | Automatiza configuración en Kibana |
+| `logstash/pipeline/logstash.conf` | LISTO | Extensión del Taller 2 con tres inputs de Kafka |
+| Plantillas de índice | LISTO | |
+| Tableros de Kibana | LISTO | Exportados como NDJSON, contiene "Precio por tiempo" |
+| `pruebas/prueba_latencia.py` | LISTO | Mide p50, p95 y p99 de extremo a extremo |
+| `pruebas/prueba_logica_streaming.py` | LISTO | Valida deduplicación y cálculo de VWAP |
+| `pruebas/prueba_carga.py` | LISTO | Estresa inyección a 500, 1000 y 2000 EPS |
 
 ---
 
@@ -461,7 +463,11 @@ Se ha creado la base del job de Spark para el procesamiento de ventanas móviles
 
 6. **Spark Structured Streaming (`spark-streaming` / `job_metricas_ventana.py`):**
    - **Rol:** Motor de procesamiento analítico en micro-batches sobre ventanas de tiempo.
-   - **Detalle:** Consume `trades.crudo` desde Kafka aplicando un esquema tipado estricto. Implementa marcas de agua (*watermarking*) para controlar eventos tardíos y agrupa en ventanas móviles (tumbling/sliding windows de 1 minuto) para calcular métricas agregadas (precio promedio, cantidad acumulada y futuro VWAP) para el negocio.
+   - **Detalle:** Consume `trades.crudo` desde Kafka validando con `esquemas_spark.py`. Implementa deduplicación por `id_trade`, marcas de agua (*watermarking* de 30s) para manejar eventos tardíos, y agrupa en ventanas *tumbling* de 1 minuto para calcular métricas de negocio exactas (`vwap`, `volatilidad_real`, `volumen_total`). Finalmente, escribe el resultado en JSON hacia el topic `metricas.1min` de Kafka.
+
+7. **Configurador de Alertas Kibana (`reglas_alertas.py`):**
+   - **Rol:** Automatización de la configuración operativa.
+   - **Detalle:** Un script en Python que interactúa vía API con Kibana para crear/provisionar las reglas de alertas (ej. Caída de precio < 150 en SOLUSDT), sin requerir intervención manual en la interfaz gráfica.
 
 ---
 
@@ -472,44 +478,62 @@ Sigue este orden paso a paso para levantar, inyectar datos y verificar cada piez
 ### Paso 1: Levantar la infraestructura base de streaming
 Asegura que los servicios de Kafka, Elasticsearch, Logstash y Kibana estén arriba y saludables:
 ```bash
-# Levanta la infraestructura de streaming (Logstash levantará por dependencia Elasticsearch y Kafka)
+# Levanta la infraestructura de streaming
 docker compose up -d zookeeper kafka kafka-init elasticsearch kibana logstash
 ```
-> **Verificación:** Ejecuta `docker compose ps` para comprobar que todos los servicios estén en estado `healthy` o `Up`. Puedes abrir Kibana en `http://localhost:5602` y Kafka UI en `http://localhost:8093`.
+> **Verificación:** Ejecuta `docker compose ps`. Puedes abrir Kibana en `http://localhost:5602` y Kafka UI en `http://localhost:8093`.
 
-### Paso 2: Iniciar la generación y publicación de trades
-Desde tu terminal de trabajo (entorno local de Python):
+### Paso 2: Configurar las alertas en Kibana
+Crea las reglas de negocio ejecutando el script (hacia la API de Kibana):
+```bash
+python procesamiento_streaming/reglas_alertas.py
+```
+
+### Paso 3: Iniciar la generación y publicación de trades
+Desde tu terminal de trabajo o entorno conda:
 ```bash
 # Inicia la emisión continua de trades hacia Kafka
-python ingesta_streaming/productor_kafka.py
+& C:/Users/estef/anaconda3/envs/Coding/python.exe c:/Users/estef/Desktop/Productivo/Clases/Maestria/7.IngenieriaDatos/ProyectoFinal/pipeline-cripto-batch-nrt/ingesta_streaming/productor_kafka.py
 ```
 > **Comportamiento esperado:** Verás en la consola mensajes continuos del tipo:
-> `-> Enviado a Kafka: BTCUSDT | Precio: 65120.5 | Importe: 3256.0`
+> `-> Enviado a Kafka: SOLUSDT | Precio: 144.83 | Importe: 383.67`
 
-### Paso 3: Validar la ingesta en Logstash y visualización en Kibana
+### Paso 4: Validar la ingesta en Logstash y visualización
 1. **Comprobar Logstash:**
    ```bash
-   # Inspecciona los logs de Logstash para verificar que consume de Kafka y escribe en Elasticsearch
    docker logs -f logstash_cripto
    ```
 2. **Visualizar en Kibana:**
    - Abre `http://localhost:5602/app/discover`.
-   - Selecciona el data view o index pattern `cripto-*`. Verás los documentos entrando en vivo cada segundo.
-
-### Paso 4: Monitorear el disparo de alertas en Kibana
-Las alertas configuradas consultan periódicamente Elasticsearch para detectar anomalías o umbrales superados:
-```bash
-# Monitorear logs de Kibana para ver la ejecución y disparos de las reglas de alerta
-docker logs -f kibana_cripto
-```
+   - Selecciona el index pattern `cripto-*`. Verás los documentos entrando en vivo cada segundo.
 
 ### Paso 5: Ejecutar el procesamiento de ventanas con Spark
-Para procesar las métricas analíticas en streaming utilizando el contenedor con las librerías de Spark y el conector de Kafka:
+Para procesar las métricas analíticas (VWAP, Volatilidad) en streaming y enviarlas a Kafka:
 ```bash
-# Ejecutar el job de Spark Streaming dentro del contenedor en la red cripto-red:
-docker compose run --rm spark-streaming python job_metricas_ventana.py
+# Ejecutar el job de Spark Streaming con spark-submit dentro del contenedor:
+docker compose run --rm spark-streaming /opt/spark/bin/spark-submit /opt/spark/work-dir/job_metricas_ventana.py
 ```
-*(Alternativa si el contenedor ya estuviera corriendo en segundo plano: `docker compose exec spark-stream bash` o `docker compose exec spark-streaming python job_metricas_ventana.py`)*
 
-> **Comportamiento esperado:** Spark iniciará la sesión, se conectará a `kafka:29092`, leerá el stream `trades.crudo` y comenzará a imprimir por consola las micro-tandas procesadas con las ventanas de 1 minuto, `simbolo`, `precio_promedio` y `cantidad_total`.
+### Paso 6: Validar la salida de Spark en el topic de destino (`metricas.1min`)
+Para comprobar que Spark está calculando las ventanas y publicando correctamente de vuelta a Kafka, usamos un consumidor desde consola en el contenedor de Kafka:
+```bash
+docker compose exec kafka /bin/kafka-console-consumer --bootstrap-server kafka:29092 --topic metricas.1min --from-beginning
+```
+> **Comportamiento esperado:** Verás el JSON resultante con la ventana de tiempo (`inicio_ventana`, `fin_ventana`), `simbolo`, `vwap`, `volatilidad_real` y `volumen_total`.
+
+### Paso 7: Ejecutar la Suite de Pruebas NRT
+Las pruebas automatizadas validan la robustez, capacidad y latencia real del pipeline de streaming:
+
+1. **Validación de Lógica (Unit Test Spark):** Valida matemáticamente el VWAP y el filtro de duplicados.
+   ```bash
+   python pruebas/prueba_logica_streaming.py
+   ```
+2. **Prueba de Carga (Throughput Kafka):** Estresa el bus de eventos inyectando tráfico a 500, 1000 y 2000 eventos por segundo. (Asegúrate de que Kafka esté corriendo).
+   ```bash
+   python pruebas/prueba_carga.py
+   ```
+3. **Prueba de Latencia End-to-End:** Compara el `ts_evento` contra el tiempo de indexación real en Elasticsearch (`@timestamp`) y calcula los percentiles p50, p95 y p99.
+   ```bash
+   python pruebas/prueba_latencia.py
+   ```
 

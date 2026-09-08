@@ -1,23 +1,10 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, window, sum, avg
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
+from pyspark.sql.functions import col, from_json, window, sum, stddev, expr, to_json, struct
+from esquemas_spark import obtener_esquema_trade
 
-# 1. Inicializar Spark (las librerías de Kafka ya están en la imagen)
-spark = SparkSession.builder \
-    .appName("NRT_Metricas_Ventana") \
-    .getOrCreate()
-
+spark = SparkSession.builder.appName("NRT_Metricas_Ventana").getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
 
-# 2. Esquema basado en el contrato de datos
-esquema_trade = StructType([
-    StructField("simbolo", StringType(), True),
-    StructField("precio", DoubleType(), True),
-    StructField("cantidad", DoubleType(), True),
-    StructField("ts_evento", TimestampType(), True)
-])
-
-# 3. Leer el stream desde Kafka
 df_crudo = spark.readStream \
     .format("kafka") \
     .option("kafka.bootstrap.servers", "kafka:29092") \
@@ -25,27 +12,41 @@ df_crudo = spark.readStream \
     .option("startingOffsets", "latest") \
     .load()
 
-# 4. Parsear el JSON
 df_parseado = df_crudo.select(
-    from_json(col("value").cast("string"), esquema_trade).alias("data")
+    from_json(col("value").cast("string"), obtener_esquema_trade()).alias("data")
 ).select("data.*")
 
-# 5. Agrupación por ventanas de 1 minuto (A refinar con Manuel)
+# Deduplicación, Watermark de 30s y Ventana Tumbling de 1 minuto
 df_agregado = df_parseado \
-    .withWatermark("ts_evento", "1 minute") \
+    .withWatermark("ts_evento", "30 seconds") \
+    .dropDuplicates(["id_trade"]) \
     .groupBy(
         window(col("ts_evento"), "1 minute"),
         col("simbolo")
     ).agg(
-        avg("precio").alias("precio_promedio"),
-        sum("cantidad").alias("cantidad_total")
+        (sum(col("precio") * col("cantidad")) / sum("cantidad")).alias("vwap"),
+        stddev("precio").alias("volatilidad_real"),
+        sum("cantidad").alias("volumen_total")
     )
 
-# 6. Imprimir resultados en consola temporalmente para depuración
-query = df_agregado.writeStream \
-    .outputMode("update") \
-    .format("console") \
-    .option("truncate", "false") \
+# Preparar el formato para enviar a Kafka (requiere columna 'value' en string)
+df_salida = df_agregado.select(
+    to_json(struct(
+        col("window.start").alias("inicio_ventana"),
+        col("window.end").alias("fin_ventana"),
+        col("simbolo"),
+        col("vwap"),
+        col("volatilidad_real"),
+        col("volumen_total")
+    )).alias("value")
+)
+
+# Escribir salida al topic metricas.1min
+query = df_salida.writeStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "kafka:29092") \
+    .option("topic", "metricas.1min") \
+    .option("checkpointLocation", "/opt/spark/work-dir/checkpoints") \
     .start()
 
 query.awaitTermination()

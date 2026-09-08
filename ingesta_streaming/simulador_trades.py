@@ -33,7 +33,7 @@ def generar_trade():
         "id_evento": str(uuid.uuid4()),
         "tipo_fuente": "nrt_trade",
         "simbolo": simbolo,
-        "id_trade": random.randint(100000000, 999999999),
+        "id_trade": str(random.randint(100000000, 999999999)),
         "precio": precio,
         "cantidad": cantidad,
         "importe_usdt": importe_usdt,
