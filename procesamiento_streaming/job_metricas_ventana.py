@@ -13,7 +13,7 @@ spark.sparkContext.setLogLevel("WARN")
 esquema_trade = StructType([
     StructField("simbolo", StringType(), True),
     StructField("precio", DoubleType(), True),
-    StructField("volumen_usdt", DoubleType(), True),
+    StructField("cantidad", DoubleType(), True),
     StructField("ts_evento", TimestampType(), True)
 ])
 
@@ -38,7 +38,7 @@ df_agregado = df_parseado \
         col("simbolo")
     ).agg(
         avg("precio").alias("precio_promedio"),
-        sum("volumen_usdt").alias("volumen_total")
+        sum("cantidad").alias("cantidad_total")
     )
 
 # 6. Imprimir resultados en consola temporalmente para depuración

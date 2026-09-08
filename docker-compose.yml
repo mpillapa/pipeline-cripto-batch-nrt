@@ -315,6 +315,7 @@ services:
     container_name: kibana_cripto
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=EstaEsUnaLlaveSuperSecretaDeAlMenos32Caracteres
     ports:
       - "5602:5601"
     depends_on:

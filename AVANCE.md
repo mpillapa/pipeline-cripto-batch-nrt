@@ -424,3 +424,92 @@ Se ha creado la base del job de Spark para el procesamiento de ventanas móviles
 **Estructura base del job de Spark lista** para implementar la lógica de agregación de ventanas.
 
 ---
+
+## Estado del Pipeline NRT
+
+- **Ingesta Streaming Completada:** Logstash lee fluidamente desde Kafka (`trades.crudo`) y escribe en Elasticsearch bajo el índice `cripto-*`. El mapeo funciona y los datos se visualizan en vivo en Kibana (Discover).
+
+- **Conexión Spark-Kafka Validada:** El job de Spark se conecta a Kafka dentro de la red `cripto-red` usando `docker compose run --rm`. Spark lee el stream, aplica el esquema estricto y ya procesa agregaciones sin arrojar nulos (el problema del campo de volumen fue identificado y mapeado a `cantidad`).
+
+- **Alertas Kibana Operativas:** Las reglas tipo Elasticsearch query están configuradas y probadas. Se solucionaron los problemas de cifrado (agregando la variable de entorno XPACK) y los desfases de sincronización de tiempo ampliando la ventana de evaluación de la alerta.
+
+- **Foco para la Sesión:** La infraestructura está resuelta. El tiempo con Manuel se dedicará 100% a refinar la lógica de negocio en `job_metricas_ventana.py` (cálculos matemáticos, watermarking avanzado) y decidir si el output de Spark se escribirá de regreso a Kafka o directo a Elasticsearch.
+
+---
+
+## Arquitectura NRT: ¿Para qué sirve cada componente?
+
+1. **Kafka + Zookeeper (`kafka`, `zookeeper`, `kafka-init`, `kafka-ui`):**
+   - **Rol:** Bus de mensajería desacoplado y de alto rendimiento (patrón Pub/Sub).
+   - **Detalle:** Actúa como el amortiguador (*buffer*) central del streaming. El topic `trades.crudo` recibe eventos continuos particionados por clave de activo (`simbolo`: BTC, ETH, SOL). `kafka-init` aprovisiona los topics con sus particiones y retención automáticamente, y `kafka-ui` (en `http://localhost:8093`) permite auditar topics, particiones y offsets en tiempo real.
+
+2. **Productor de Trades (`ingesta_streaming/productor_kafka.py` + `simulador_trades.py`):**
+   - **Rol:** Emisor/Generador de eventos en tiempo real.
+   - **Detalle:** Simula la llegada ininterrumpida de transacciones del mercado cripto (precio, cantidad, timestamp en UTC, tipo de fuente). Se conecta al listener externo de Kafka (`localhost:9095`) y publica un flujo constante de datos hacia el topic `trades.crudo`.
+
+3. **Logstash (`logstash_cripto`):**
+   - **Rol:** Pipeline de ingesta directa hacia el motor de búsqueda.
+   - **Detalle:** Se conecta al listener interno (`kafka:29092`), consume los eventos crudos, realiza la normalización temporal asignando `ts_evento` a `@timestamp` y los indexa inmediatamente en Elasticsearch bajo el patrón `cripto-nrt_trade-YYYY.MM.dd`.
+
+4. **Elasticsearch (`elasticsearch_cripto`):**
+   - **Rol:** Repositorio analítico de series temporales y búsqueda distribuida.
+   - **Detalle:** Almacena los eventos indexados con tipos de datos estrictos, permitiendo búsquedas de baja latencia, agregaciones temporales y consultas por rango utilizadas por Kibana y por la futura conciliación con el pipeline Batch.
+
+5. **Kibana (`kibana_cripto`):**
+   - **Rol:** Visualización y motor de alertas NRT.
+   - **Detalle:** Permite explorar los eventos en vivo mediante **Discover** (puerto `5602`) y ejecuta reglas de alertas periódicas (Elasticsearch Query rules) que evalúan ventanas temporales de datos para detectar anomalías (ej. picos de volumen o saltos de precio) reportando advertencias en sus logs.
+
+6. **Spark Structured Streaming (`spark-streaming` / `job_metricas_ventana.py`):**
+   - **Rol:** Motor de procesamiento analítico en micro-batches sobre ventanas de tiempo.
+   - **Detalle:** Consume `trades.crudo` desde Kafka aplicando un esquema tipado estricto. Implementa marcas de agua (*watermarking*) para controlar eventos tardíos y agrupa en ventanas móviles (tumbling/sliding windows de 1 minuto) para calcular métricas agregadas (precio promedio, cantidad acumulada y futuro VWAP) para el negocio.
+
+---
+
+## Secuencia de Ejecución del Pipeline NRT
+
+Sigue este orden paso a paso para levantar, inyectar datos y verificar cada pieza:
+
+### Paso 1: Levantar la infraestructura base de streaming
+Asegura que los servicios de Kafka, Elasticsearch, Logstash y Kibana estén arriba y saludables:
+```bash
+# Levanta la infraestructura de streaming (Logstash levantará por dependencia Elasticsearch y Kafka)
+docker compose up -d zookeeper kafka kafka-init elasticsearch kibana logstash
+```
+> **Verificación:** Ejecuta `docker compose ps` para comprobar que todos los servicios estén en estado `healthy` o `Up`. Puedes abrir Kibana en `http://localhost:5602` y Kafka UI en `http://localhost:8093`.
+
+### Paso 2: Iniciar la generación y publicación de trades
+Desde tu terminal de trabajo (entorno local de Python):
+```bash
+# Inicia la emisión continua de trades hacia Kafka
+python ingesta_streaming/productor_kafka.py
+```
+> **Comportamiento esperado:** Verás en la consola mensajes continuos del tipo:
+> `-> Enviado a Kafka: BTCUSDT | Precio: 65120.5 | Importe: 3256.0`
+
+### Paso 3: Validar la ingesta en Logstash y visualización en Kibana
+1. **Comprobar Logstash:**
+   ```bash
+   # Inspecciona los logs de Logstash para verificar que consume de Kafka y escribe en Elasticsearch
+   docker logs -f logstash_cripto
+   ```
+2. **Visualizar en Kibana:**
+   - Abre `http://localhost:5602/app/discover`.
+   - Selecciona el data view o index pattern `cripto-*`. Verás los documentos entrando en vivo cada segundo.
+
+### Paso 4: Monitorear el disparo de alertas en Kibana
+Las alertas configuradas consultan periódicamente Elasticsearch para detectar anomalías o umbrales superados:
+```bash
+# Monitorear logs de Kibana para ver la ejecución y disparos de las reglas de alerta
+docker logs -f kibana_cripto
+```
+
+### Paso 5: Ejecutar el procesamiento de ventanas con Spark
+Para procesar las métricas analíticas en streaming utilizando el contenedor con las librerías de Spark y el conector de Kafka:
+```bash
+# Ejecutar el job de Spark Streaming dentro del contenedor en la red cripto-red:
+docker compose run --rm spark-streaming python job_metricas_ventana.py
+```
+*(Alternativa si el contenedor ya estuviera corriendo en segundo plano: `docker compose exec spark-stream bash` o `docker compose exec spark-streaming python job_metricas_ventana.py`)*
+
+> **Comportamiento esperado:** Spark iniciará la sesión, se conectará a `kafka:29092`, leerá el stream `trades.crudo` y comenzará a imprimir por consola las micro-tandas procesadas con las ventanas de 1 minuto, `simbolo`, `precio_promedio` y `cantidad_total`.
+
