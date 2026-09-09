@@ -1,0 +1,167 @@
+{
+  "index_patterns": [
+    "cripto-*"
+  ],
+  "template": {
+    "mappings": {
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "apertura": {
+          "type": "float"
+        },
+        "cantidad": {
+          "type": "double"
+        },
+        "cierre": {
+          "type": "float"
+        },
+        "cierre_batch": {
+          "type": "float"
+        },
+        "cobertura_pct": {
+          "type": "float"
+        },
+        "comprador_es_maker": {
+          "type": "boolean"
+        },
+        "desviacion_pct": {
+          "type": "float"
+        },
+        "detalle": {
+          "type": "text"
+        },
+        "fecha": {
+          "type": "date"
+        },
+        "fecha_hora": {
+          "type": "date"
+        },
+        "id_activo": {
+          "type": "keyword"
+        },
+        "id_alerta": {
+          "type": "keyword"
+        },
+        "id_trade": {
+          "type": "long"
+        },
+        "importe_usdt": {
+          "type": "double"
+        },
+        "lote_id": {
+          "type": "keyword"
+        },
+        "maximo": {
+          "type": "float"
+        },
+        "minimo": {
+          "type": "float"
+        },
+        "n_trades": {
+          "type": "long"
+        },
+        "n_trades_batch": {
+          "type": "long"
+        },
+        "n_trades_streaming": {
+          "type": "long"
+        },
+        "nivel_volatilidad": {
+          "type": "keyword"
+        },
+        "origen": {
+          "type": "keyword"
+        },
+        "origen_datos": {
+          "type": "keyword"
+        },
+        "precio": {
+          "type": "double"
+        },
+        "precio_apertura": {
+          "type": "double"
+        },
+        "precio_cierre": {
+          "type": "double"
+        },
+        "precio_maximo": {
+          "type": "double"
+        },
+        "precio_minimo": {
+          "type": "double"
+        },
+        "regla": {
+          "type": "keyword"
+        },
+        "retorno_pct": {
+          "type": "float"
+        },
+        "severidad": {
+          "type": "keyword"
+        },
+        "simbolo": {
+          "type": "keyword"
+        },
+        "sma_30": {
+          "type": "float"
+        },
+        "sma_7": {
+          "type": "float"
+        },
+        "tipo_fuente": {
+          "type": "keyword"
+        },
+        "ts_evento": {
+          "type": "date"
+        },
+        "ts_generada": {
+          "type": "date"
+        },
+        "ts_indexado": {
+          "type": "date"
+        },
+        "ts_ingesta": {
+          "type": "date"
+        },
+        "ts_procesado": {
+          "type": "date"
+        },
+        "umbral_pct": {
+          "type": "float"
+        },
+        "valor_pct": {
+          "type": "float"
+        },
+        "ventana_fin": {
+          "type": "date"
+        },
+        "ventana_inicio": {
+          "type": "date"
+        },
+        "veredicto": {
+          "type": "keyword"
+        },
+        "volatilidad_30d": {
+          "type": "float"
+        },
+        "volatilidad_pct": {
+          "type": "double"
+        },
+        "volumen_base": {
+          "type": "double"
+        },
+        "volumen_usdt": {
+          "type": "double"
+        },
+        "vwap": {
+          "type": "double"
+        },
+        "vwap_streaming": {
+          "type": "float"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+FROM apache/spark:3.5.6
+
+# Cambiamos a root temporalmente para tener permisos de escritura y descarga
+USER root
+
+# Nos movemos a la carpeta nativa donde Spark lee sus librerías al arrancar
+WORKDIR /opt/spark/jars/
+
+# 1. Conector principal de Kafka para Structured Streaming
+RUN curl -O https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.12/3.5.6/spark-sql-kafka-0-10_2.12-3.5.6.jar
+
+# 2. Proveedor de tokens (dependencia obligatoria desde Spark 3.x)
+RUN curl -O https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.12/3.5.6/spark-token-provider-kafka-0-10_2.12-3.5.6.jar
+
+# 3. Cliente nativo de Kafka (versión compatible con Spark 3.5.x)
+RUN curl -O https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.4.1/kafka-clients-3.4.1.jar
+
+# 4. Pool de conexiones de Apache Commons (dependencia del cliente de Kafka)
+RUN curl -O https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar
+
+# Restauramos el usuario por defecto por seguridad y regresamos al directorio de trabajo
+USER spark
+WORKDIR /opt/spark/work-dir

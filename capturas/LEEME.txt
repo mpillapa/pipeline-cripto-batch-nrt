@@ -1,0 +1,2 @@
+Las capturas van aqui. Que fotografiar y con que estado:
+docs/GUIA_CAPTURAS.md

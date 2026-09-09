@@ -1,0 +1,35 @@
+# Imagen de Airflow con las dependencias del camino batch ya instaladas.
+#
+# POR QUE UNA IMAGEN PROPIA Y NO _PIP_ADDITIONAL_REQUIREMENTS:
+#
+# Esa variable de entorno reinstala los paquetes en CADA ARRANQUE de CADA
+# contenedor de Airflow (webserver, scheduler, init). Son 30-60 segundos por
+# `docker compose up`, exige internet siempre, y como no fija versiones cada
+# arranque puede traer una distinta. Con la imagen construida, se instala una
+# vez y queda.
+#
+# Es la misma leccion del entorno anterior del taller, documentada alli en el
+# punto 2 del historial de correcciones.
+
+FROM apache/airflow:2.10.4
+
+# ---------------------------------------------------------------------------
+# Dependencias del pipeline
+# ---------------------------------------------------------------------------
+COPY requisitos/airflow.txt /requisitos/airflow.txt
+
+# Se instala CON EL ARCHIVO DE RESTRICCIONES oficial de Airflow. Sin el, pip es
+# libre de actualizar cualquier dependencia transitiva de Airflow para
+# satisfacer un paquete nuevo, y el resultado tipico es un Airflow que ya no
+# arranca por una version incompatible de alguna libreria interna.
+#
+# La version de Python se lee del propio interprete en vez de fijarla a mano:
+# si algun dia se cambia la etiqueta de la imagen base, esto sigue apuntando al
+# archivo de restricciones correcto.
+RUN PYTHON_VERSION="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" && \
+    pip install --no-cache-dir -r /requisitos/airflow.txt \
+        --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-${PYTHON_VERSION}.txt"
+
+# El codigo NO se copia dentro de la imagen: se monta como volumen desde el
+# compose. Asi editar un DAG no obliga a reconstruir la imagen, que es lo que
+# uno hace veinte veces al dia mientras desarrolla.

@@ -21,14 +21,14 @@ entre al pipeline, venga de donde venga, lo lleva.
 
 | Valor | Origen | Flujo | Índice destino |
 |---|---|---|---|
-| `nrt_trade` | Productor WebSocket o simulador | NRT | `cripto-nrt-trade-YYYY.MM.dd` |
-| `nrt_metrica` | Job de Spark | NRT | `cripto-nrt-metrica-YYYY.MM.dd` |
-| `nrt_alerta` | Job de Spark | NRT | `cripto-nrt-alerta-YYYY.MM.dd` |
-| `batch_ohlcv` | Airflow DAG 04 | Batch | `cripto-batch-ohlcv-YYYY.MM.dd` |
-| `batch_referencia` | `http_poller` de Logstash | Batch | `cripto-batch-referencia-YYYY.MM.dd` |
-| `batch_conciliacion` | Airflow DAG 05 | Batch | `cripto-batch-conciliacion-YYYY.MM.dd` |
-| `ops_control` | DAGs y productor, por HTTP al 8088 | NRT | `cripto-ops-control-YYYY.MM.dd` |
-| `ops_log` | Componentes, por TCP al 5000 | NRT | `cripto-ops-log-YYYY.MM.dd` |
+| `nrt_trade` | Productor WebSocket o simulador | NRT | `cripto-nrt_trade-YYYY.MM.dd` |
+| `nrt_metrica` | Job de Spark | NRT | `cripto-nrt_metrica-YYYY.MM.dd` |
+| `nrt_alerta` | Job de Spark | NRT | `cripto-nrt_alerta-YYYY.MM.dd` |
+| `batch_ohlcv` | Airflow DAG 04 | Batch | `cripto-batch_ohlcv` (sin fecha) |
+| `batch_referencia` | `http_poller` de Logstash | Batch | `cripto-batch_referencia-YYYY.MM.dd` |
+| `batch_conciliacion` | Airflow DAG 05 | Batch | `cripto-batch_conciliacion` |
+| `ops_control` | DAGs y productor, por HTTP al 8088 | NRT | `cripto-ops_control-YYYY.MM.dd` |
+| `ops_log` | Componentes, por TCP al 5000 | NRT | `cripto-ops_log-YYYY.MM.dd` |
 
 ---
 
@@ -55,7 +55,20 @@ la ventana equivocada y la conciliación mediría el retraso de la red en lugar 
 
 ## 3. Evento de trade — Kafka `trades.crudo`
 
-Clave del mensaje: `simbolo`. Escribe: Estéfano. Lee: Spark y Logstash.
+Clave del mensaje: `simbolo`. Lee: Spark y Logstash.
+
+Hay **dos** productores que emiten este mismo mensaje y se eligen con
+`CRIPTO_FUENTE_TRADES`:
+
+| Fuente | Módulo | `origen` | Para qué |
+|---|---|---|---|
+| F1, exchange real | `ingesta_streaming/cliente_websocket.py` | `exchange_ws` | Modo por defecto. Es la única con la que la conciliación del DAG 05 significa algo |
+| F2, simulador | `ingesta_streaming/simulador_trades.py` | `simulador` | Trabajar sin red, y las pruebas de carga y de deduplicación, que necesitan controlar la tasa y los `id_trade` |
+
+Si el exchange no responde, el productor cae a F2 salvo que
+`CRIPTO_RESPALDO_SIMULADOR=false`. La caída es **ruidosa**: se avisa por consola y se
+publica un evento `ops_control`. Aun así, lo que garantiza que nadie se confunda después
+es el campo `origen` de cada evento.
 
 ```json
 {
@@ -111,7 +124,8 @@ Escribe: Spark. Lee: Logstash y, agregado vía Elasticsearch, el DAG 05.
   "vwap":            63248.77,
   "volatilidad_pct": 0.33,
   "ts_procesado":    "2026-09-07T14:04:03.180Z",
-  "origen":          "spark_streaming"
+  "origen":          "spark_streaming",
+  "origen_datos":    "exchange_ws"
 }
 ```
 
@@ -126,6 +140,17 @@ Escribe: Spark. Lee: Logstash y, agregado vía Elasticsearch, el DAG 05.
   `14:04:00.000` pertenece a la ventana siguiente.
 - `ts_procesado − ventana_fin` es la latencia de procesamiento, y es lo que sube cuando
   Spark se atrasa.
+- `origen` dice **quién calculó** la métrica y siempre vale `spark_streaming`.
+  `origen_datos` dice **de dónde venían los trades** que la alimentaron: se agrega desde
+  el campo `origen` de los eventos de la ventana y vale `exchange_ws`, `simulador` o
+  `exchange_ws+simulador` si la ventana mezcla ambas fuentes —lo que solo ocurre en el
+  minuto en que se cambia de fuente.
+
+**`origen_datos` es lo que hace auditable la conciliación.** El DAG 05 solo concilia las
+ventanas con `origen_datos = exchange_ws` (parámetro `CONCILIACION_ORIGEN_DATOS`), porque
+comparar el VWAP del simulador contra la vela real del exchange no mide el pipeline: mide
+la distancia entre las constantes del simulador y el mercado. Medido el 9/9/2026 con el
+simulador: −20 %, +36 % y +40 % de desviación con cobertura del 8 %, 10 % y 33 %.
 
 ---
 
@@ -153,7 +178,7 @@ Escribe: Spark. Lee: Logstash.
 
 ---
 
-## 6. Vela diaria — MySQL `hechos_ohlcv_diario` y `cripto-batch-ohlcv-*`
+## 6. Vela diaria — MySQL `hechos_ohlcv_diario` y `cripto-batch_ohlcv`
 
 Escribe: Manuel (DAG 04). El mismo registro va a MySQL y, exportado como NDJSON, a
 Elasticsearch vía Logstash.
@@ -197,7 +222,7 @@ es el contrato de ese traspaso.
 | Formato | Un objeto JSON por línea, sin indentación |
 | Codec de Logstash | `json_lines` |
 | `tipo_fuente` de cada documento | `batch_ohlcv` |
-| Índice destino | `cripto-batch-ohlcv-YYYY.MM.dd` |
+| Índice destino | `cripto-batch_ohlcv` (sin fecha) |
 | Campo temporal para `@timestamp` | `fecha_hora`, en ISO 8601 UTC |
 
 **Un archivo nuevo por lote, no uno que se sobrescribe.** El input `file` de Logstash
@@ -227,7 +252,7 @@ Escribe: Manuel (DAG 05). Es el resultado que responde si los dos flujos coincid
 |---|---|---|
 | `simbolo` | `VARCHAR(20)` | |
 | `fecha_hora` | `DATETIME` | Granularidad de comparación: **hora**, no día |
-| `vwap_streaming` | `DECIMAL(20,8)` | Agregado de `cripto-nrt-metrica-*` a nivel hora, ponderado por volumen |
+| `vwap_streaming` | `DECIMAL(20,8)` | Agregado de `cripto-nrt_metrica-*` a nivel hora, ponderado por volumen |
 | `n_trades_streaming` | `INT` | Suma de `n_trades` de las 60 ventanas de esa hora |
 | `cierre_batch` | `DECIMAL(20,8)` | Cierre de la vela horaria del batch |
 | `n_trades_batch` | `INT` | Trades de esa hora según el exchange |
@@ -244,6 +269,13 @@ Comparar minuto a minuto exigiría descargar 1 440 velas por símbolo y por día
 reales alcanzó a ver el flujo en vivo. Una desviación pequeña con cobertura del 40 % no
 significa que el streaming esté bien: significa que se perdió más de la mitad de los
 datos y aun así el promedio salió parecido.
+
+**Solo se concilian las ventanas con `origen_datos = exchange_ws`.** Es el requisito que
+hace que la comparación tenga sentido: los dos lados tienen que estar midiendo el mismo
+mercado. Contra el simulador, la desviación mide la distancia entre unas constantes
+escritas a mano y el precio real, no la exactitud del pipeline. El parámetro es
+`CONCILIACION_ORIGEN_DATOS`; ponerlo a `None` desactiva el filtro y solo sirve para
+depurar.
 
 ---
 
@@ -295,19 +327,38 @@ mapeo de campos entre flujos:
 
 ---
 
-## 10. Pendiente de acordar en la sesión del Día 1
+## 10. Decisiones cerradas
 
-Lo que este borrador deja abierto porque depende de Estéfano:
+Las cinco cuestiones que este contrato dejó abiertas el Día 1. Todas están resueltas y
+**verificadas contra el sistema en marcha** el 9 de septiembre de 2026.
 
-1. ¿El productor valida el JSON Schema antes de publicar, o publica todo y Spark filtra?
-   Validar en el productor deja Kafka limpio; validar en Spark permite cuarentena también
-   en NRT. **Propuesta: validar en el productor y descartar con log a `ops_log`.**
-2. Número de particiones de `trades.crudo`. **Propuesta: 3, una por símbolo**, para que
-   el orden por símbolo quede garantizado.
-3. Retención de los topics. **Propuesta: 24 horas**, suficiente para reprocesar en las
-   pruebas sin llenar el disco.
-4. ¿`ops_log` sale también a Elasticsearch o solo a la consola? **Propuesta: a
-   Elasticsearch**, es la mitad del argumento de observabilidad.
-5. Confirmar los tres símbolos. **Propuesta: `BTCUSDT`, `ETHUSDT`, `SOLUSDT`** — el
-   primero de alto volumen, el último bastante menor, para que las ventanas no se vean
-   todas iguales en la demo.
+| # | Cuestión | Decisión | Dónde está |
+|---|---|---|---|
+| 1 | ¿Validar en el productor o en Spark? | **En Spark** — al revés de la propuesta inicial. Ver abajo | `job_metricas_ventana.py`, `parsear()` |
+| 2 | Particiones de `trades.crudo` | **3**, una por símbolo, para garantizar el orden dentro de cada activo | `docker-compose.yml`, `kafka-init` |
+| 3 | Retención de los topics | **24 horas** (`retention.ms=86400000`) | `docker-compose.yml`, `kafka-init` |
+| 4 | ¿`ops_log` va a Elasticsearch? | **Sí**, índice `cripto-ops_control-*` | `logstash.conf`, entradas HTTP 8088 y TCP 5000 |
+| 5 | Símbolos | **BTCUSDT, ETHUSDT, SOLUSDT** | `CRIPTO_SIMBOLOS` |
+
+### Sobre la primera: se decidió por el camino contrario al propuesto
+
+La propuesta era validar en el productor y descartar con log a `ops_log`. **No es lo que
+se implementó.** El productor publica lo que recibe, y quien filtra es Spark: `parsear()`
+descarta las filas con nulos en `simbolo`, `precio`, `cantidad` o `ts_evento`.
+
+Se deja así, y no por inercia:
+
+- **Un mensaje que no cumple el esquema no lanza excepción en Spark: deja todas las
+  columnas nulas.** Hace falta el filtro de todos modos, valide o no el productor. Validar
+  en los dos sitios sería mantener la misma regla por duplicado.
+- **Los mensajes corruptos no se pierden de vista.** Los que Logstash no puede parsear
+  acaban en `cripto-desconocido-*` con las etiquetas `_jsonparsefailure` y
+  `sin_tipo_fuente`. Hay trazabilidad sin necesidad de una cuarentena aparte.
+- **Está probado.** `pruebas/prueba_malformados.py` inyecta cinco tipos de mensaje corrupto
+  intercalados entre trades válidos y comprueba que la ventana resultante contiene
+  exactamente los válidos, con el VWAP intacto.
+
+Lo que se pierde respecto a la propuesta: en NRT no hay una zona de cuarentena revisable
+como la del camino batch, donde cada registro rechazado guarda su motivo. **Es una
+diferencia consciente entre los dos caminos**: conservar cada mensaje corrupto de un flujo
+continuo cuesta más de lo que vale.

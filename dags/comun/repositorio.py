@@ -297,12 +297,21 @@ def verificar_integridad_referencial(lote_id):
 
 
 def velas_horarias(simbolo, desde, hasta):
-    """Velas horarias de un simbolo en un rango. Las usa la conciliacion del DAG 05."""
-    return consultar(
-        "SELECT h.fecha, h.cierre, h.n_trades "
-        "FROM " + config.TABLA_OHLCV + " h "
-        "JOIN " + config.TABLA_ACTIVOS + " a ON a.id_activo = h.id_activo "
-        "WHERE a.simbolo = %s AND h.fecha BETWEEN %s AND %s "
-        "ORDER BY h.fecha",
-        (simbolo, desde, hasta),
+    """OBSOLETA - no usar. Se conserva el nombre solo para explicar por que se fue.
+
+    Consultaba hechos_ohlcv_diario, que es una tabla DIARIA por diseno. O sea que
+    habria devuelto velas diarias con nombre de horarias, y la conciliacion
+    habria comparado el VWAP de UNA HORA contra el cierre de UN DIA ENTERO sin
+    dar ningun error: solo un numero de desviacion que parece plausible y no
+    significa nada.
+
+    La referencia horaria que necesita el DAG 05 se descarga en el momento, en
+    comun/conciliacion.obtener_referencia_batch, y no se persiste. Mezclar dos
+    granularidades en una tabla de hechos es la forma mas rapida de que un
+    conteo posterior salga mal sin que nadie lo note.
+    """
+    raise NotImplementedError(
+        "velas_horarias fue retirada: consultaba la tabla diaria. Usa "
+        "comun.conciliacion.obtener_referencia_batch, que descarga velas "
+        "horarias sin persistirlas."
     )

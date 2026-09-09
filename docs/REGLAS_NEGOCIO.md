@@ -279,6 +279,41 @@ hechos que falla por clave foránea.**
 
 ---
 
+## 7.bis Regla de conciliación
+
+### C01 — Solo se concilia lo que es comparable
+
+**Una ventana del streaming solo se compara contra la vela del batch si sus trades vinieron
+del mercado real** (`origen_datos = exchange_ws`). Las ventanas alimentadas por el
+simulador se excluyen de la conciliación.
+
+**Por qué es una regla y no un detalle técnico.** La conciliación afirma algo concreto: que
+los dos flujos, midiendo lo mismo por caminos distintos, llegan al mismo número. Eso exige
+que los dos estén midiendo lo mismo. El simulador genera precios como una caminata de
+±0,2 % alrededor de tres constantes escritas a mano, así que compararlo contra la vela real
+del exchange no mide el pipeline: mide la distancia entre esas constantes y el mercado.
+
+Medido el 9 de septiembre de 2026, la misma lógica de conciliación sobre las dos fuentes:
+
+| Fuente | Desviación BTC | Desviación ETH | Desviación SOL | Cobertura |
+|---|---|---|---|---|
+| Simulador | −20,03 % | +36,20 % | +39,72 % | 8 – 33 % |
+| Exchange real | 0,02 % | 0,14 % | 0,24 % | — |
+
+**Sin esta regla, el veredicto `DESVIADO` es ambiguo**, y esa ambigüedad es el verdadero
+problema: no se puede distinguir "el streaming pierde datos o calcula mal" de "estás
+comparando datos inventados contra datos reales". Un número que puede significar dos cosas
+opuestas no sirve para validar nada.
+
+**Implementación.** El job de Spark agrega el campo `origen` de los trades de cada ventana
+y publica el resultado como `origen_datos`. El DAG 05 lo usa como filtro en la consulta a
+Elasticsearch. Las métricas anteriores a este cambio no llevan el campo, y el filtro las
+excluye por sí solo, que es lo correcto: son del simulador.
+
+Poner `CONCILIACION_ORIGEN_DATOS` a `None` desactiva el filtro. Solo sirve para depurar.
+
+---
+
 ## 8. Parámetros, en un solo sitio
 
 Todos viven en [`dags/comun/config.py`](../dags/comun/config.py) y se pueden cambiar sin
@@ -296,3 +331,4 @@ tocar ninguna regla.
 | `CORTE_VOLATILIDAD_BAJA` / `MEDIA` | 2,0 / 5,0 | Etiquetas de T03 |
 | `CONCILIACION_DESVIACION_ACEPTABLE` | 0,5 % | Veredicto del DAG 05 |
 | `CONCILIACION_COBERTURA_MINIMA` | 60 % | Veredicto del DAG 05 |
+| `CONCILIACION_ORIGEN_DATOS` | `exchange_ws` | Qué ventanas entran en la conciliación (regla C01) |
