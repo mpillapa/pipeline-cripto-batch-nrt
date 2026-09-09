@@ -24,6 +24,7 @@ from pyspark.sql.functions import (
     min as f_min, struct, sum as f_sum, to_json, when, window,
 )
 
+import reglas_alertas
 from esquemas_spark import obtener_esquema_trade
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,20 @@ from esquemas_spark import obtener_esquema_trade
 KAFKA = os.environ.get("CRIPTO_KAFKA", "kafka:29092")
 TOPIC_ENTRADA = os.environ.get("CRIPTO_TOPIC_TRADES", "trades.crudo")
 TOPIC_SALIDA = os.environ.get("CRIPTO_TOPIC_METRICAS", "metricas.1min")
+TOPIC_ALERTAS = os.environ.get("CRIPTO_TOPIC_ALERTAS", "alertas.precio")
+
+# Los umbrales NO se definen aqui: son la regla de negocio y viven en
+# `reglas_alertas.py`, en Python puro y con sus pruebas. Este modulo los importa
+# y construye la expresion de columna equivalente.
+#
+# Se duplica la logica -aqui con `when()`, alli con `if`- en vez de envolver la
+# funcion en una UDF, porque una UDF de Python se ejecuta fila a fila
+# serializando entre la JVM y el interprete, y eso pesa en un stream. El precio
+# es que hay dos expresiones de lo mismo, y `prueba_logica_streaming.py`
+# comprueba que coinciden en los bordes.
+UMBRAL_ALERTA = reglas_alertas.UMBRAL_PCT
+UMBRAL_ALERTA_MEDIA = reglas_alertas.UMBRAL_MEDIA_PCT
+UMBRAL_ALERTA_ALTA = reglas_alertas.UMBRAL_ALTA_PCT
 
 VENTANA = os.environ.get("CRIPTO_VENTANA", "1 minute")
 WATERMARK = os.environ.get("CRIPTO_WATERMARK", "30 seconds")
@@ -241,19 +256,68 @@ def formatear_salida(df):
     )
 
 
+def formatear_alertas(df):
+    """Alertas de variacion de precio, con la forma que fija el contrato (sec. 5).
+
+    Se derivan de las MISMAS ventanas ya agregadas, no de un segundo recorrido
+    del stream: una ventana cuya volatilidad supera el umbral produce a la vez
+    su metrica y su alerta. Eso evita mantener dos estados y garantiza que
+    alerta y metrica cuenten lo mismo.
+
+    POR QUE LA ALERTA SE GENERA AQUI Y NO EN KIBANA. Kibana Alerting sabe
+    consultar un indice cada minuto y avisar, pero la alerta vive entonces
+    dentro de Kibana: no es un dato, no viaja por el bus, no se puede reprocesar
+    ni conciliar, y desaparece si alguien reconstruye la instancia. Publicandola
+    en `alertas.precio` la alerta es un evento mas, con su `id_alerta`, indexado
+    junto al resto y consultable con las mismas herramientas.
+    """
+    iso = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+
+    disparadas = df.filter(col("volatilidad_pct") > lit(UMBRAL_ALERTA))
+
+    severidad = (
+        when(col("volatilidad_pct") >= lit(UMBRAL_ALERTA_ALTA), lit("ALTA"))
+        .when(col("volatilidad_pct") >= lit(UMBRAL_ALERTA_MEDIA), lit("MEDIA"))
+        .otherwise(lit("BAJA"))
+    )
+
+    return disparadas.select(
+        col("simbolo").alias("key"),
+        to_json(struct(
+            lit("nrt_alerta").alias("tipo_fuente"),
+            # uuid() por fila: `id_alerta` tiene que ser unico por evento, y una
+            # sola llamada fuera del select daria el mismo valor a todas.
+            expr("uuid()").alias("id_alerta"),
+            col("simbolo"),
+            lit(reglas_alertas.REGLA).alias("regla"),
+            lit(UMBRAL_ALERTA).alias("umbral_pct"),
+            col("volatilidad_pct").alias("valor_pct"),
+            date_format(col("window.start"), iso).alias("ventana_inicio"),
+            date_format(col("window.end"), iso).alias("ventana_fin"),
+            severidad.alias("severidad"),
+            expr(
+                "concat('Variacion de ', round(volatilidad_pct, 2), "
+                "'% supera el umbral de ', round(" + str(UMBRAL_ALERTA) + ", 2), '%')"
+            ).alias("detalle"),
+            date_format(current_timestamp(), iso).alias("ts_generada"),
+        )).alias("value"),
+    )
+
+
 def main():
     sesion = construir_sesion()
 
     print("Kafka      : " + KAFKA)
     print("Entrada    : " + TOPIC_ENTRADA)
     print("Salida     : " + TOPIC_SALIDA)
+    print("Alertas    : " + TOPIC_ALERTAS + "  umbral: " + str(UMBRAL_ALERTA) + " %")
     print("Ventana    : " + VENTANA + "  watermark: " + WATERMARK)
     print("Checkpoint : " + CHECKPOINT)
 
-    salida = formatear_salida(agregar(parsear(leer_trades(sesion))))
+    agregado = agregar(parsear(leer_trades(sesion)))
 
-    consulta = (
-        salida.writeStream
+    consulta_metricas = (
+        formatear_salida(agregado).writeStream
         .format("kafka")
         .option("kafka.bootstrap.servers", KAFKA)
         .option("topic", TOPIC_SALIDA)
@@ -267,7 +331,21 @@ def main():
         .start()
     )
 
-    consulta.awaitTermination()
+    # Segunda consulta sobre el MISMO DataFrame agregado. Spark ejecuta cada
+    # `writeStream` por separado, asi que necesita su propio checkpoint: dos
+    # consultas compartiendo uno se pisan los offsets y fallan al reanudar.
+    consulta_alertas = (
+        formatear_alertas(agregado).writeStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA)
+        .option("topic", TOPIC_ALERTAS)
+        .option("checkpointLocation", CHECKPOINT + "_alertas")
+        .outputMode("append")
+        .trigger(processingTime=INTERVALO)
+        .start()
+    )
+
+    sesion.streams.awaitAnyTermination()
 
 
 if __name__ == "__main__":
