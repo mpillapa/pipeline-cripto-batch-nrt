@@ -1,0 +1,374 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Pipeline batch + near real-time de mercado cripto",
+    "subtitle": "Dos flujos sobre un bus compartido, un unico escritor hacia Elasticsearch y una conciliacion que los compara",
+    "output": "arquitectura.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "completo",
+        "label": "Circuito completo",
+        "focus": [
+          "exchange",
+          "simulador",
+          "productor",
+          "kafka_trades",
+          "spark",
+          "kafka_metricas",
+          "api_rest",
+          "catalogo",
+          "airflow",
+          "zonas",
+          "mysql",
+          "dag05",
+          "logstash",
+          "elasticsearch",
+          "kibana"
+        ],
+        "note": "Los dos caminos leen el mismo mercado y se encuentran en Elasticsearch. Logstash es el unico proceso que escribe alli."
+      },
+      {
+        "id": "nrt",
+        "label": "Camino near real-time",
+        "focus": [
+          "exchange",
+          "simulador",
+          "productor",
+          "kafka_trades",
+          "spark",
+          "kafka_metricas",
+          "logstash",
+          "elasticsearch"
+        ],
+        "note": "Trade a trade desde el exchange hasta la ventana de un minuto. Kafka desacopla la ingesta del procesamiento."
+      },
+      {
+        "id": "batch",
+        "label": "Camino batch",
+        "focus": [
+          "api_rest",
+          "catalogo",
+          "airflow",
+          "zonas",
+          "mysql",
+          "logstash",
+          "elasticsearch"
+        ],
+        "note": "Velas horarias de la API publica hacia las zonas Parquet y el modelo dimensional. Carga idempotente por clave natural."
+      },
+      {
+        "id": "conciliacion",
+        "label": "Conciliacion entre flujos",
+        "focus": [
+          "spark",
+          "kafka_metricas",
+          "logstash",
+          "elasticsearch",
+          "mysql",
+          "dag05"
+        ],
+        "note": "El DAG 05 agrega las ventanas de Spark a la granularidad del batch. Solo concilia lo que trae origen_datos = exchange_ws."
+      }
+    ],
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "external": {
+          "label": "Fuente externa"
+        },
+        "backend": {
+          "label": "Procesamiento"
+        },
+        "messagebus": {
+          "label": "Bus de eventos"
+        },
+        "database": {
+          "label": "Almacenamiento"
+        },
+        "frontend": {
+          "label": "Visualizacion"
+        }
+      }
+    }
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [
+      48,
+      116
+    ],
+    "cols": 6,
+    "gapX": 58,
+    "gapY": 72,
+    "cellW": 172,
+    "cellH": 68
+  },
+  "components": [
+    {
+      "id": "exchange",
+      "type": "external",
+      "label": "Exchange",
+      "sublabel": "WebSocket",
+      "tag": "F1",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "simulador",
+      "type": "backend",
+      "label": "Simulador",
+      "sublabel": "Sintetico",
+      "tag": "F2",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "productor",
+      "type": "backend",
+      "label": "Productor",
+      "sublabel": "a Kafka",
+      "tag": "por simbolo",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "kafka_trades",
+      "type": "messagebus",
+      "label": "Kafka",
+      "sublabel": "trades.crudo",
+      "tag": "3 particiones",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "spark",
+      "type": "backend",
+      "label": "Spark Streaming",
+      "sublabel": "Ventana 1 min",
+      "tag": "watermark 30 s",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "kafka_metricas",
+      "type": "messagebus",
+      "label": "Kafka",
+      "sublabel": "metricas.1min",
+      "row": 1,
+      "col": 4
+    },
+    {
+      "id": "logstash",
+      "type": "backend",
+      "label": "Logstash",
+      "sublabel": "Unico escritor",
+      "tag": "5 entradas",
+      "row": 2,
+      "col": 4
+    },
+    {
+      "id": "elasticsearch",
+      "type": "database",
+      "label": "Elasticsearch",
+      "sublabel": "Indices",
+      "tag": "tipos fijos",
+      "row": 2,
+      "col": 5
+    },
+    {
+      "id": "api_rest",
+      "type": "external",
+      "label": "API REST",
+      "sublabel": "Velas horarias",
+      "row": 3,
+      "col": 0
+    },
+    {
+      "id": "airflow",
+      "type": "backend",
+      "label": "Airflow",
+      "sublabel": "DAG 01-04",
+      "tag": "LocalExecutor",
+      "row": 3,
+      "col": 1
+    },
+    {
+      "id": "zonas",
+      "type": "database",
+      "label": "Zonas de datos",
+      "sublabel": "bronce, plata",
+      "tag": "Parquet",
+      "row": 3,
+      "col": 2
+    },
+    {
+      "id": "mysql",
+      "type": "database",
+      "label": "MySQL",
+      "sublabel": "Dimensional",
+      "tag": "idempotente",
+      "row": 3,
+      "col": 3
+    },
+    {
+      "id": "dag05",
+      "type": "backend",
+      "label": "Airflow DAG 05",
+      "sublabel": "Conciliacion",
+      "row": 3,
+      "col": 4
+    },
+    {
+      "id": "kibana",
+      "type": "frontend",
+      "label": "Kibana",
+      "sublabel": "Tableros",
+      "row": 3,
+      "col": 5
+    },
+    {
+      "id": "catalogo",
+      "type": "external",
+      "label": "Catalogo",
+      "sublabel": "CSV semilla",
+      "row": 4,
+      "col": 0
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Camino near real-time",
+      "wraps": [
+        "exchange",
+        "simulador",
+        "productor",
+        "kafka_trades",
+        "spark",
+        "kafka_metricas"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Camino batch",
+      "wraps": [
+        "api_rest",
+        "catalogo",
+        "airflow",
+        "zonas",
+        "mysql",
+        "dag05"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "exchange-productor",
+      "from": "exchange",
+      "to": "productor",
+      "variant": "emphasis"
+    },
+    {
+      "id": "simulador-productor",
+      "from": "simulador",
+      "to": "productor",
+      "variant": "dashed"
+    },
+    {
+      "id": "productor-kafka",
+      "from": "productor",
+      "to": "kafka_trades",
+      "label": "trades.crudo",
+      "variant": "emphasis"
+    },
+    {
+      "id": "kafka-spark",
+      "from": "kafka_trades",
+      "to": "spark",
+      "variant": "emphasis"
+    },
+    {
+      "id": "spark-metricas",
+      "from": "spark",
+      "to": "kafka_metricas",
+      "variant": "emphasis"
+    },
+    {
+      "id": "kafka-logstash",
+      "from": "kafka_trades",
+      "to": "logstash",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "metricas-logstash",
+      "from": "kafka_metricas",
+      "to": "logstash",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "api-airflow",
+      "from": "api_rest",
+      "to": "airflow",
+      "label": "klines"
+    },
+    {
+      "id": "catalogo-airflow",
+      "from": "catalogo",
+      "to": "airflow"
+    },
+    {
+      "id": "airflow-zonas",
+      "from": "airflow",
+      "to": "zonas",
+      "label": "Parquet"
+    },
+    {
+      "id": "zonas-mysql",
+      "from": "zonas",
+      "to": "mysql",
+      "label": "carga"
+    },
+    {
+      "id": "mysql-logstash",
+      "from": "mysql",
+      "to": "logstash",
+      "label": "NDJSON",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "logstash-es",
+      "from": "logstash",
+      "to": "elasticsearch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "es-kibana",
+      "from": "elasticsearch",
+      "to": "kibana"
+    },
+    {
+      "id": "dag05-es",
+      "from": "dag05",
+      "to": "elasticsearch",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "dag05-mysql",
+      "from": "dag05",
+      "to": "mysql",
+      "label": "veredicto",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right"
+    }
+  ]
+}

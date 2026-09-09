@@ -26,24 +26,26 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 | Conciliación entre flujos | **Midiendo el mercado real** | Fuente F1 (WebSocket) implementada el 9 de septiembre. Los dos flujos leen el mismo exchange, que es lo que hace que la comparación signifique algo |
 | Documentación | Adelantada | Plan, contrato, reglas de negocio, README y este archivo |
 
-**Estado del circuito, recontado el 9 de septiembre a las 03:50 UTC** tras migrar
-Elasticsearch a un volumen persistente (ver bitácora del mismo día):
+**Estado del circuito, recontado el 9 de septiembre a las 16:10 UTC**, con las once
+pruebas ejecutables pasadas y el tablero construido:
 
 | Índice en Elasticsearch | Documentos | Origen |
 |---|---|---|
+| `cripto-nrt_trade-2026.09.09` | 1 213 057 | Exchange y simulador → Kafka → Logstash |
+| `cripto-nrt_metrica-2026.09.09` | 658 | Trades → Kafka → **Spark** → Kafka → Logstash |
 | `cripto-batch_ohlcv` | 1 092 | Airflow → Parquet → MySQL → NDJSON → Logstash |
-| `cripto-nrt_trade-2026.09.09` | 318 581 | Exchange y simulador → Kafka → Logstash |
-| `cripto-nrt_metrica-2026.09.09` | 516 | Trades → Kafka → **Spark** → Kafka → Logstash |
-| `cripto-batch_conciliacion` | 6 | DAG 05, comparando los dos flujos |
-| `cripto-ops_control-2026.09.09` | 5 | El pipeline observándose a sí mismo |
+| `cripto-batch_conciliacion` | 9 | DAG 05, comparando los dos flujos |
+| `cripto-ops_control-2026.09.09` | 10 | El pipeline observándose a sí mismo |
+| `cripto-nrt_alerta-2026.09.09` | 0 | Spark → Kafka → Logstash. Vacío porque el mercado está tranquilo: verificado bajando el umbral |
+| `cripto-desconocido-2026.09.09` | 3 | Lo que Logstash no supo enrutar, marcado y no descartado |
 
-Reparto de los trades por fuente, que es la evidencia de que F1 quedó enchufada:
-`exchange_ws` 285 422, `simulador` 33 159.
+Reparto de los trades por fuente: `exchange_ws` **1 151 534**, `simulador` 104 309.
 
-> **Un índice a vigilar.** `cripto-desconocido-2026.09.09` tiene 1 documento: algo llegó a
-> Logstash sin un `tipo_fuente` que la configuración supiera enrutar. Un solo documento no
-> molesta, pero conviene averiguar cuál es antes de la demo, porque el patrón `cripto-*` de
-> Kibana sí lo incluye.
+> **Los tres documentos «desconocidos» son una buena señal, no un problema.** Son mensajes
+> que Logstash no pudo parsear —dos los inyectó la prueba de malformados, y el tercero es
+> un JSON truncado de una corrida anterior— y llevan las etiquetas `_jsonparsefailure` y
+> `sin_tipo_fuente`. Descartarlos los haría invisibles y el síntoma sería «faltan datos»
+> sin ninguna pista.
 
 Las métricas de Spark cumplen el contrato campo por campo. Comprobación aritmética sobre
 una ventana real: `volumen_usdt / volumen_base` = 351 251,94 / 103,2919 = 3400,58, que
@@ -86,7 +88,7 @@ coincide con el `vwap` publicado.
 | `contratos/CONTRATO_DATOS.md` | EN CURSO | Aplicado por los dos caminos, pero la **sección 10 sigue redactada como cinco decisiones abiertas** cuando las cinco ya se resolvieron en el código tal y como estaban propuestas: validación en el productor, 3 particiones, retención de 24 h, `ops_log` a Elasticsearch y los tres símbolos. Falta pasarlas al cuerpo del contrato y borrar esa sección |
 | `sql/01_esquemas.sql` y `sql/02_tablas.sql` | LISTO | Cuatro tablas. Fuente única del esquema |
 | Plantilla de índice de Elasticsearch | LISTO | 24 campos con tipos explícitos, aplicada al arrancar por `elasticsearch-init` |
-| Diagrama de arquitectura | PENDIENTE | Sirve para el documento y la exposición |
+| Diagrama de arquitectura | LISTO | `docs/arquitectura.html`, interactivo y con cuatro vistas guiadas. La fuente versionada es el JSON; el HTML se compila con archify y no se edita a mano |
 
 ---
 
@@ -179,43 +181,157 @@ verificar es lo que depende del flujo NRT: que la conciliación produzca filas r
 | `logstash/pipeline_cripto/logstash.conf` | LISTO | Tenía 1 input de 5. Añadidos `metricas.1min`, `alertas.precio`, el `file` del NDJSON batch, y los del 8088 y 5000. Los cinco flujos han indexado |
 | Plantilla de índice de Elasticsearch | LISTO | El JSON estaba bien, pero nada lo aplicaba. Añadido el servicio `elasticsearch-init` |
 | `pruebas/prueba_websocket.py` | LISTO | 8 bloques, todas pasan. No necesita red ni Kafka |
-| Tableros de Kibana | PENDIENTE | `kibana/tableros.ndjson` exporta 2 objetos: un patrón de índice `cripto-*` y un tablero **sin paneles** (`"hits":0`). Es el entregable de visualización y ahora mismo está vacío |
-| `procesamiento_streaming/reglas_alertas.py` | PENDIENTE | Crea una regla en Kibana en vez de publicar en `alertas.precio`. Declara `rule_type_id: metrics.alert.threshold` pero le pasa parámetros de `es_query`, y apunta a `localhost:5602`, que no resuelve desde dentro de la red. **Decisión de diseño abierta**, ver sección 6 |
-| `pruebas/prueba_latencia.py` | ESCRITO | Sin ejecutar. Ahora es posible: el job ya emite `ts_procesado` y hay 318 581 trades indexados sobre los que medir |
+| Tableros de Kibana | LISTO | 5 patrones de índice, 7 visualizaciones y 1 tablero, provisionados al arrancar por `kibana-init`. Refresco de 30 s, ventana de 6 h |
+| `procesamiento_streaming/reglas_alertas.py` | LISTO | Reescrito como reglas puras: umbrales y clasificación de severidad, sin Spark y con pruebas. El job importa los umbrales de aquí |
+| `pruebas/prueba_latencia.py` | LISTO | Ejecutada. Tres etapas medidas; la 3 exigió añadir el sello `ts_indexado` en Logstash. p50 de 162 ms en el tramo hasta Logstash |
 | `pruebas/prueba_logica_streaming.py` | LISTO | **Ejecutada por fin el 9 de septiembre: 7 de 7.** Faltaban dos cosas para poder correrla, ver bitácora: montar `pruebas/` en el contenedor y lanzarla con `spark-submit` en vez de `python3` |
-| `pruebas/prueba_carga.py` | ESCRITO | Sin ejecutar |
+| `pruebas/prueba_carga.py` | LISTO | Reescrita para medir el **lag del consumidor** y no la tasa de inyección. Aguanta 500, 1 000 y 2 000 ev/s |
 | `Dockerfile.spark` | LISTO | Los cuatro JAR horneados. **Resuelve el riesgo número uno del proyecto**: el job arrancó sin descargar nada |
 | Servicios ELK en el compose | LISTO | Elasticsearch, Kibana y Logstash 7.17.10. `spark-streaming` no tenía `command`: corregido. Elasticsearch no tenía volumen: corregido el 9 de septiembre |
-| Alertas en Kibana | ESCRITO | Reglas de tipo *Elasticsearch query* creadas y disparando. Hubo que añadir `XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY` a Kibana —sin esa clave el guardado de reglas falla— y ampliar la ventana de evaluación, porque la regla evaluaba antes de que el documento estuviera indexado y no encontraba nada |
+| Alertas | LISTO | Se generan en Spark y se publican en `alertas.precio`, como dice el contrato. Verificadas de punta a punta hasta `cripto-nrt_alerta-*`, campo por campo |
 
 ---
 
 ## 4.bis Qué queda por hacer
 
-Los dos caminos funcionan y el circuito está cerrado. Lo que falta ya no es
-infraestructura: es **evidencia y documentación**, que entre las dos pesan el 30 % de la
-rúbrica. Ordenado por lo que más cuesta si no se hace.
+Los dos caminos funcionan, las once pruebas ejecutables pasan y el tablero está
+construido. Lo que falta es **recoger evidencia y ensayar**.
 
-| Pendiente | De quién | Por qué importa |
+| Pendiente | De quién | Notas |
 |---|---|---|
-| Tablero de Kibana con paneles reales | Estéfano | `kibana/tableros.ndjson` exporta un tablero vacío. Es *el* entregable de visualización, y en la exposición es lo que se enseña |
-| Decidir el destino de las alertas | Estéfano | El contrato dice `alertas.precio` desde Spark; lo implementado son reglas de Kibana. Hay que cerrar la discrepancia en un sentido o en el otro, y que el contrato y el código digan lo mismo |
-| Ejecutar `prueba_latencia` y `prueba_carga` | Estéfano | Los percentiles p50/p95/p99 y el resultado de carga son las cifras que sostienen «resultados y validación». Hay 318 581 trades indexados sobre los que medir |
-| `docs/DECISIONES.md` | Los dos | El material bruto ya está en la bitácora de la sección 5. Es trabajo de redacción, no de investigación |
-| `docs/PRUEBAS.md` con los resultados | Los dos | Inventario de las siete pruebas y qué demuestra cada una |
-| Diagrama de arquitectura | Los dos | El de texto del README sirve de base. Hace falta uno presentable |
-| `capturas/` y `docs/GUIA_CAPTURAS.md` | Los dos | Respaldo por si la demo en vivo falla |
-| `docs/GUION_EXPOSICION.md` y dos ensayos | Los dos | 20 minutos cronometrados |
-| Cerrar la sección 10 del contrato | Manuel | Las cinco decisiones ya se tomaron en el código; el documento sigue presentándolas como abiertas |
-| Averiguar `cripto-desconocido-2026.09.09` | Estéfano | Un documento llegó a Logstash sin `tipo_fuente` enrutable. Es uno solo, pero el patrón `cripto-*` de Kibana lo incluye |
+| Capturas de `capturas/` | Los dos | Catorce fichas en [docs/GUIA_CAPTURAS.md](docs/GUIA_CAPTURAS.md), por orden de importancia. Necesita el circuito con 30 min de datos |
+| Vídeo de respaldo de 90 s | Los dos | Guion en la guía de capturas. Sin voz: se narra en directo |
+| **P12 — arranque desde cero** | Los dos | `down -v` y levantar solo con el README. **Va al final**: borra la evidencia de todo lo demás |
+| Ensayo 1, cronometrado | Los dos | Día 6. Objetivo: caber en 20 minutos |
+| Ensayo 2, con preguntas cruzadas | Los dos | Día 7. Cinco preguntas duras sobre la parte del otro |
+| Etiquetar `v1.0` y entregar | Manuel | Comprobar que el repositorio no lleva datos pesados ni credenciales |
 
-**Sobre el orden.** El tablero y las dos pruebas van primero porque son las únicas que
-necesitan el entorno levantado y datos frescos. La documentación se puede escribir con
-todo apagado.
+**Dos anomalías conocidas, ninguna bloqueante:**
+
+- El lote `L20260907_020115` figura como `CONCILIADO` con `filas_cargadas` en NULL. Los
+  datos están; la bitácora quedó a medias.
+- `main` sigue en el commit del camino batch. Para la entrega, el tag debería salir de
+  `main`, no de una rama de trabajo.
 
 ---
 
 ## 5. Bitácora de hallazgos y decisiones
+
+### 2026-09-09 (tarde) · Cinco defectos que solo aparecen cuando se ejecutan las pruebas
+
+Jornada de cerrar pendientes. Todo lo que sigue estaba escrito y se daba por bueno.
+
+**1. Spark llevaba horas sin emitir una sola ventana, y nada lo indicaba.**
+59 reinicios acumulados. La causa: el checkpoint se montaba en `./datos/checkpoints`, y
+`airflow-init` hace `chown -R ${AIRFLOW_UID:-50000}:0` sobre todo `datos/`. Spark corre
+como uid 185, así que **cada inicialización de Airflow dejaba al job sin permiso de
+escritura sobre su propio estado**. Moría con `FileNotFoundException ... (Permission
+denied)` y `restart: on-failure` lo levantaba para que volviera a morir.
+
+Es un conflicto entre los dos caminos que ninguno de los dos podía ver por separado. El
+checkpoint vive ahora en el volumen nombrado `spark-checkpoints`: es estado interno del
+motor, no una zona de datos, y no tiene por qué estar en el árbol que Airflow reclama.
+
+**2. La prueba de carga medía el `sleep` del simulador, no Kafka.**
+Reportaba 34 eventos/s con un objetivo de 2000. `generar_trade()` incluye un
+`time.sleep(0.01–0.05)` para imitar latencia de red, que promedia 30 ms y **topa la
+generación en unos 30 eventos por segundo**. La prueba concluía que el bus no daba más.
+Ahora `generar_trade(latencia_simulada=False)` lo desactiva, y el productor alcanza las
+tres tasas.
+
+Con eso arreglado apareció el defecto de fondo: la prueba medía **la tasa de inyección**,
+es decir el productor contra sí mismo. Si el proceso logra empujar 2000 ev/s imprime
+éxito, aunque Logstash vaya cinco minutos por detrás. Reescrita para medir el **lag del
+consumidor**, que es lo que pide el criterio del plan. Resultado: aguanta las tres tasas;
+20 000 mensajes acumulados se drenan en 4 segundos.
+
+**3. La etapa 3 de la latencia no era «no medible», solo faltaba un campo.**
+`prueba_latencia.py` declaraba el tramo Kafka → Logstash → Elasticsearch como hueco. Se
+resolvió con una línea en el filtro de Logstash: un `ruby` que sella `ts_indexado` con la
+hora de entrada. **No sirve `@timestamp`**, porque Logstash lo deriva de `ts_evento` y la
+resta daría cero siempre — que es exactamente lo que hacía la primera versión de la
+prueba, la que reportaba 0,00 ms en los tres percentiles. Medido: p50 162 ms, p95 532 ms.
+
+**4. La plantilla de índice solo cubría el flujo NRT.**
+Los 24 campos declarados eran todos del camino rápido. **Todo el batch se mapeaba
+dinámicamente**, y por eso `veredicto` había quedado como `text`: el panel de conciliación
+—el entregable estrella— no podía agrupar por él, y salía vacío sin ningún error. Es el
+mismo fallo silencioso que la plantilla existe para evitar, esta vez por omisión y no por
+un campo suelto. Añadidos 20 campos del batch y 7 de las alertas: de 25 a 52.
+
+De paso se corrigió `origen`, que seguía como `text` en el índice del día. Se reindexó en
+vez de dejarlo: 998 982 documentos, 0 fallos, y el reparto por fuente intacto
+(`exchange_ws` 894 533, `simulador` 104 449). La nota anterior decía que no se corregía
+para no perder la evidencia; reindexar la conserva, así que no había tal disyuntiva.
+
+**5. El DAG exportaba 9 filas y Elasticsearch recibía 6.**
+El input `file` de Logstash va en modo `tail` y recuerda por inodo hasta dónde leyó cada
+archivo. El DAG 05 escribía siempre `conciliacion.ndjson`, así que al sobrescribirlo
+Logstash **retomaba desde el desplazamiento anterior** en vez de leer el contenido nuevo.
+Sin error, sin aviso: simplemente faltaban filas en el índice del que lee el tablero.
+
+Arreglado en los DAG 04 y 05 con una marca de tiempo en el nombre del archivo. Las 9 filas
+están indexadas.
+
+**Lo que tienen en común los cinco.** Ninguno daba error. Un job que se reinicia, una
+prueba que devuelve un número plausible, un panel vacío, un índice con menos filas de las
+esperadas. **El patrón del proyecto entero es el fallo silencioso**, y es lo que conviene
+llevar a la exposición: no la lista de defectos, sino que todos se parecen.
+
+---
+
+### 2026-09-09 (tarde) · Las alertas se generan en Spark, no en Kibana
+
+Era la última decisión de diseño abierta. Se resuelve **como decía el contrato**: la
+alerta se publica en el topic `alertas.precio` y la emite el job.
+
+La implementación anterior creaba una regla en Kibana Alerting por API, y además no habría
+funcionado: declaraba `rule_type_id: metrics.alert.threshold` con parámetros de `es_query`,
+y apuntaba a `localhost:5602`, que no resuelve desde dentro de la red de Docker.
+
+**El motivo de fondo no es formal.** Una regla de Kibana vive dentro de Kibana: no es un
+dato, no viaja por el bus, no se puede reprocesar ni conciliar, y desaparece si alguien
+reconstruye la instancia. Publicada en Kafka, la alerta es un evento como cualquier otro,
+con su `id_alerta`, y Logstash la indexa por el mismo camino que trades y métricas. Con
+esto **los cinco flujos del contrato están cerrados**.
+
+**Se deriva de las ventanas ya agregadas, no de un segundo recorrido del stream.** Una
+ventana que supera el umbral produce a la vez su métrica y su alerta, así que las dos
+cuentan lo mismo. Son dos `writeStream` sobre el mismo DataFrame, y cada uno necesita su
+propio checkpoint: compartirlo hace que se pisen los offsets.
+
+**El umbral está calibrado contra el mercado, no elegido a ojo.** La volatilidad por minuto
+de BTC/ETH/SOL tiene mediana 0,13 % y p90 0,30 %, así que el 0,50 % del contrato casi nunca
+saltaría. El compose lo baja a 0,25 %: suena en los minutos movidos y calla en los
+tranquilos. Una alerta que no suena nunca no se puede demostrar.
+
+**La regla vive en `reglas_alertas.py`, no en el job.** Umbrales y clasificación de
+severidad en Python puro, con sus pruebas. El job importa los umbrales y construye la
+expresión de columna equivalente. Se duplica la lógica a propósito —una UDF de Python por
+fila serializa entre la JVM y el intérprete, y eso pesa en un stream— y por eso hay una
+prueba que compara las dos expresiones en los bordes: es lo que impide que se separen.
+
+---
+
+### 2026-09-09 (tarde) · El tablero de Kibana, y por qué estaba vacío
+
+`kibana/tableros.ndjson` exportaba dos objetos: un patrón de índice y un dashboard **sin
+paneles**. El entregable de visualización no existía.
+
+Construido: 5 patrones de índice, 7 visualizaciones y 1 tablero. Los paneles cuentan la
+historia del proyecto en el orden en que se explica —salud del circuito, reparto por
+fuente y conciliación arriba; VWAP y trades en medio; volatilidad y serie del batch
+abajo—, con refresco de 30 s y ventana de 6 horas.
+
+**Se provisiona solo.** El servicio `kibana-init` importa el NDJSON al arrancar, igual que
+`elasticsearch-init` con la plantilla. Sin eso, el tablero sería un archivo que hay que
+acordarse de importar a mano: estaría en el repositorio y no en la demo.
+
+El `healthcheck` de Kibana no puede ser `/api/status`: responde antes de que los saved
+objects estén listos, y la importación falla con «Kibana server is not ready yet». Se
+comprueba contra `_export`, que da 200 solo cuando de verdad se puede escribir.
+
+---
 
 ### 2026-09-09 · Elasticsearch guardaba 135 MB de evidencia donde un `down` los borra
 
@@ -850,13 +966,25 @@ nada sobre la red del aula el día de la exposición.
 
 ## 6. Bloqueos actuales
 
-| Bloqueo | Afecta a | Se resuelve |
-|---|---|---|
-| ~~Contrato de datos sin revisar por Estéfano~~ | ~~Ambos caminos~~ | **Resuelto.** Los dos caminos lo aplican. Queda redactar la sección 10, que sigue listando como abiertas cinco decisiones ya implementadas |
-| ~~Código del Taller 2 aún no está en el repo~~ | ~~`docker-compose.yml`, Logstash~~ | **Resuelto.** Compose unificado con los servicios ELK dentro |
-| ~~El DAG 05 necesita métricas NRT en Elasticsearch~~ | ~~`dag_05_conciliacion`~~ | **Resuelto el 9 de septiembre.** Concilia contra métricas reales |
-| ~~Los índices se pierden con un `docker compose down`~~ | ~~Toda la evidencia~~ | **Resuelto el 9 de septiembre.** Volumen `elasticsearch-datos`, datos migrados |
-| La demo depende de que el exchange sea alcanzable | Fuente F1, conciliación | No se elimina: se declara. Si el exchange no responde, el productor cae al simulador con `origen=simulador` y la conciliación excluye esas ventanas en vez de dar un número falso |
-| Nada escribe en `alertas.precio` | `nrt_alerta`, paneles de Kibana | Pendiente de Estéfano: decidir entre generarlas en Spark (lo que dice el contrato) o con Kibana Alerting. Hoy hay reglas de Kibana disparando, que **no es lo que el contrato describe** |
-| El tablero de Kibana está vacío | Entregable de visualización | `kibana/tableros.ndjson` exporta un tablero sin paneles. Hay que construirlo y volver a exportar |
-| Dos pruebas escritas y nunca ejecutadas | Evidencia de resultados (10 % de la rúbrica) | `prueba_latencia` y `prueba_carga`, con el entorno arriba. `prueba_logica_streaming` ya corrió: 7 de 7 |
+Ninguno bloquea la entrega. Lo que queda son límites declarados, no cosas por arreglar.
+
+| Antes bloqueaba | Estado |
+|---|---|
+| ~~Contrato sin revisar~~ | **Cerrado.** Sección 10 reescrita: las cinco decisiones, resueltas y verificadas |
+| ~~Código del Taller 2 fuera del repo~~ | **Resuelto.** Compose unificado |
+| ~~El DAG 05 necesita métricas NRT~~ | **Resuelto.** Concilia contra el mercado real |
+| ~~Los índices se pierden con un `down`~~ | **Resuelto.** Volumen `elasticsearch-datos` |
+| ~~Nada escribe en `alertas.precio`~~ | **Resuelto.** Las emite Spark |
+| ~~El tablero está vacío~~ | **Resuelto.** 7 paneles, provisionados al arrancar |
+| ~~Pruebas escritas y nunca ejecutadas~~ | **Resuelto.** Once ejecutadas; P12 queda para el Día 7 a propósito |
+| ~~El checkpoint de Spark sin permisos~~ | **Resuelto.** Volumen `spark-checkpoints` |
+| ~~Faltaban filas de conciliación en ES~~ | **Resuelto.** Nombre de archivo con marca por corrida |
+
+**Límites que se quedan, y se declaran en la exposición:**
+
+| Límite | Por qué no se elimina |
+|---|---|
+| La demo depende de que el exchange sea alcanzable | No hay forma de quitarlo sin volver a datos inventados. Si no responde, el productor cae al simulador con `origen=simulador` y la conciliación excluye esas ventanas en vez de dar un número falso |
+| Entrega al-menos-una-vez, no exactamente-una-vez | Con deduplicación por `id_trade` basta para el caso. No es lo mismo, y se dice |
+| Un solo nodo de Kafka y de Elasticsearch | Es un prototipo en una máquina de 16 GB |
+| Las pruebas cubren la lógica, no la orquestación | No hay pruebas automatizadas de los DAGs |

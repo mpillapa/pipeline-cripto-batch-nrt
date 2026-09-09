@@ -327,19 +327,38 @@ mapeo de campos entre flujos:
 
 ---
 
-## 10. Pendiente de acordar en la sesión del Día 1
+## 10. Decisiones cerradas
 
-Lo que este borrador deja abierto porque depende de Estéfano:
+Las cinco cuestiones que este contrato dejó abiertas el Día 1. Todas están resueltas y
+**verificadas contra el sistema en marcha** el 9 de septiembre de 2026.
 
-1. ¿El productor valida el JSON Schema antes de publicar, o publica todo y Spark filtra?
-   Validar en el productor deja Kafka limpio; validar en Spark permite cuarentena también
-   en NRT. **Propuesta: validar en el productor y descartar con log a `ops_log`.**
-2. Número de particiones de `trades.crudo`. **Propuesta: 3, una por símbolo**, para que
-   el orden por símbolo quede garantizado.
-3. Retención de los topics. **Propuesta: 24 horas**, suficiente para reprocesar en las
-   pruebas sin llenar el disco.
-4. ¿`ops_log` sale también a Elasticsearch o solo a la consola? **Propuesta: a
-   Elasticsearch**, es la mitad del argumento de observabilidad.
-5. Confirmar los tres símbolos. **Propuesta: `BTCUSDT`, `ETHUSDT`, `SOLUSDT`** — el
-   primero de alto volumen, el último bastante menor, para que las ventanas no se vean
-   todas iguales en la demo.
+| # | Cuestión | Decisión | Dónde está |
+|---|---|---|---|
+| 1 | ¿Validar en el productor o en Spark? | **En Spark** — al revés de la propuesta inicial. Ver abajo | `job_metricas_ventana.py`, `parsear()` |
+| 2 | Particiones de `trades.crudo` | **3**, una por símbolo, para garantizar el orden dentro de cada activo | `docker-compose.yml`, `kafka-init` |
+| 3 | Retención de los topics | **24 horas** (`retention.ms=86400000`) | `docker-compose.yml`, `kafka-init` |
+| 4 | ¿`ops_log` va a Elasticsearch? | **Sí**, índice `cripto-ops_control-*` | `logstash.conf`, entradas HTTP 8088 y TCP 5000 |
+| 5 | Símbolos | **BTCUSDT, ETHUSDT, SOLUSDT** | `CRIPTO_SIMBOLOS` |
+
+### Sobre la primera: se decidió por el camino contrario al propuesto
+
+La propuesta era validar en el productor y descartar con log a `ops_log`. **No es lo que
+se implementó.** El productor publica lo que recibe, y quien filtra es Spark: `parsear()`
+descarta las filas con nulos en `simbolo`, `precio`, `cantidad` o `ts_evento`.
+
+Se deja así, y no por inercia:
+
+- **Un mensaje que no cumple el esquema no lanza excepción en Spark: deja todas las
+  columnas nulas.** Hace falta el filtro de todos modos, valide o no el productor. Validar
+  en los dos sitios sería mantener la misma regla por duplicado.
+- **Los mensajes corruptos no se pierden de vista.** Los que Logstash no puede parsear
+  acaban en `cripto-desconocido-*` con las etiquetas `_jsonparsefailure` y
+  `sin_tipo_fuente`. Hay trazabilidad sin necesidad de una cuarentena aparte.
+- **Está probado.** `pruebas/prueba_malformados.py` inyecta cinco tipos de mensaje corrupto
+  intercalados entre trades válidos y comprueba que la ventana resultante contiene
+  exactamente los válidos, con el VWAP intacto.
+
+Lo que se pierde respecto a la propuesta: en NRT no hay una zona de cuarentena revisable
+como la del camino batch, donde cada registro rechazado guarda su motivo. **Es una
+diferencia consciente entre los dos caminos**: conservar cada mensaje corrupto de un flujo
+continuo cuesta más de lo que vale.

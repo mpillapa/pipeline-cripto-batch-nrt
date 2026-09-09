@@ -22,12 +22,13 @@ en **[AVANCE.md](AVANCE.md)**.
 | Parte | Estado |
 |---|---|
 | Camino batch — módulo `comun/` y DAGs 01–05 | Ejecutado de punta a punta, con idempotencia verificada |
-| Camino near real-time | Funcionando. Trades del exchange real y métricas de ventana llegando a Elasticsearch |
-| Entorno `docker compose` | Completo y levantado, con los dos caminos corriendo encima |
-| Conciliación (DAG 05) | Concilia contra métricas reales del mercado |
-| Tableros de Kibana | **Pendiente.** El export existe pero no tiene paneles |
-| Alertas a `alertas.precio` | **Pendiente.** Hoy hay reglas de Kibana, que no es lo que dice el contrato |
-| Documentación de cierre | Faltan `DECISIONES.md`, `PRUEBAS.md`, el guion y las capturas |
+| Camino near real-time | Funcionando. Más de un millón de trades del exchange real indexados |
+| Entorno `docker compose` | Completo, con plantillas y tablero provisionados al arrancar |
+| Conciliación (DAG 05) | 9 ventanas conciliadas contra el mercado real |
+| Alertas | Generadas en Spark hacia `alertas.precio`, como fija el contrato |
+| Tablero de Kibana | 7 paneles, se importa solo al levantar el entorno |
+| Pruebas | 11 de las 12 del plan, ejecutadas y documentadas |
+| Pendiente | Capturas, vídeo de respaldo, P12 (arranque en limpio) y los dos ensayos |
 
 **Lo que se puede ejecutar sin levantar nada** está en la sección [Probar la lógica sin
 infraestructura](#4-probar-la-lógica-sin-infraestructura); para el circuito completo, ver
@@ -344,10 +345,16 @@ corren dentro de la red; desde el host el mismo input está en el 8089.
 │   ├── dag_04_carga_mysql.py
 │   └── dag_05_conciliacion.py  Compara el flujo NRT contra el batch
 ├── datos_semilla/              Catálogo de activos, versionado
-├── pruebas/                    Cuatro corren sin infraestructura; tres la necesitan
+├── pruebas/                    Tres corren sin infraestructura; cinco necesitan el entorno
 ├── docs/
 │   ├── ARQUITECTURA.md         Papel de cada servicio
+│   ├── arquitectura.html       Diagrama interactivo (compilado del JSON)
+│   ├── DECISIONES.md           Decisiones de diseño y su porqué
+│   ├── PRUEBAS.md              Las doce pruebas y sus resultados
+│   ├── GUION_EXPOSICION.md     Guion cronometrado
+│   ├── GUIA_CAPTURAS.md        Qué capturar y con qué estado
 │   └── REGLAS_NEGOCIO.md       Catálogo de reglas, fórmulas y supuestos
+├── capturas/                   Evidencia para el documento y el respaldo de la demo
 └── datos/                      Se crea al ejecutar; no se versiona
     └── bronce/ cuarentena/ plata/ exportado/ checkpoints/
 ```
@@ -391,22 +398,10 @@ visible.
 | [PLAN.md](PLAN.md) | Alcance, arquitectura, reparto, cronograma, riesgos |
 | [AVANCE.md](AVANCE.md) | Estado por entregable y bitácora de problemas resueltos |
 | [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) | Papel de cada servicio y qué pasaría si no estuviera |
+| [docs/arquitectura.html](docs/arquitectura.html) | Diagrama interactivo, cuatro vistas guiadas. Se abre en el navegador |
+| [docs/DECISIONES.md](docs/DECISIONES.md) | Cada decisión de diseño con su contexto y lo que costó |
+| [docs/PRUEBAS.md](docs/PRUEBAS.md) | Las doce pruebas, con resultados reales y cómo repetirlas |
+| [docs/GUION_EXPOSICION.md](docs/GUION_EXPOSICION.md) | Guion cronometrado de 20 minutos y preguntas probables |
+| [docs/GUIA_CAPTURAS.md](docs/GUIA_CAPTURAS.md) | Qué capturar, con qué estado y para qué |
 | [contratos/CONTRATO_DATOS.md](contratos/CONTRATO_DATOS.md) | Esquemas, tipos, unidades y nombres prohibidos |
 | [docs/REGLAS_NEGOCIO.md](docs/REGLAS_NEGOCIO.md) | Catálogo de reglas, fórmulas y supuestos |
-
----
-
-## 9. Limitaciones conocidas
-
-- **Prototipo, no producción.** Llevarlo a producción exigiría evaluar arquitectura,
-  registro de esquemas gestionado, autenticación y secretos, alta disponibilidad de Kafka
-  y Elasticsearch, monitoreo, pruebas automatizadas de la orquestación, infraestructura
-  como código, soporte y continuidad.
-- **Credenciales en claro** en el compose. Aceptable en local; no replicar fuera.
-- **Elasticsearch con la seguridad desactivada**, igual que en el Taller 2.
-- **Sin pruebas automatizadas de los DAGs.** Las pruebas cubren la lógica de negocio, no
-  la orquestación.
-- **El VWAP del flujo NRT es aproximado por construcción**: se calcula solo con los trades
-  recibidos. Eso no es un defecto oculto, es precisamente lo que mide la conciliación.
-- **Los datos no representan la operación de nadie.** Son cotizaciones públicas de un
-  exchange, o series sintéticas cuando no hay red.

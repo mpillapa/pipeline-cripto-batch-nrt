@@ -1,9 +1,33 @@
 # Arquitectura — qué hace cada pieza y por qué está
 
-El **diagrama** del circuito completo está en la [sección 2 del README](../README.md#2-arquitectura),
-y las **decisiones de diseño con su justificación**, en la tabla que lo sigue. Este
-documento responde otra pregunta, la que suele caer en la exposición: *para qué sirve cada
-servicio y qué pasaría si no estuviera*.
+El **diagrama interactivo** está en [arquitectura.html](arquitectura.html): se abre en el
+navegador, no necesita servidor y trae cuatro vistas guiadas —circuito completo, camino
+NRT, camino batch y conciliación— además de exportación a PNG para el documento y las
+diapositivas. La versión en texto sigue en la [sección 2 del README](../README.md#2-arquitectura),
+y las **decisiones de diseño con su justificación**, en la tabla que la sigue.
+
+Este documento responde otra pregunta, la que suele caer en la exposición: *para qué sirve
+cada servicio y qué pasaría si no estuviera*.
+
+> **Cómo se regenera el diagrama.** La fuente es
+> [arquitectura.architecture.json](arquitectura.architecture.json), no el HTML: el HTML es
+> un artefacto compilado y no se edita a mano. Se genera con
+> [archify](https://github.com/tt-a1i/archify) (MIT), que **no hace falta instalar**: se
+> clona y se ejecuta su CLI. Desde una carpeta cualquiera, con Node 18 o superior:
+>
+> ```bash
+> git clone --depth 1 https://github.com/tt-a1i/archify.git
+> node archify/archify/bin/archify.mjs validate architecture docs/arquitectura.architecture.json
+> node archify/archify/bin/archify.mjs render   architecture docs/arquitectura.architecture.json docs/arquitectura.html --quality showcase
+> ```
+>
+> `validate` es la parte útil: además del esquema comprueba que ninguna etiqueta se solape
+> con una caja, que ninguna flecha atraviese un componente ajeno y que el texto siga siendo
+> legible a 1440 px. Si el diagrama se queda desactualizado, se corrige el JSON y se vuelve
+> a compilar; el HTML nunca se toca.
+>
+> En Windows la ruta del proyecto es larga y `git clone` puede fallar con *filename too
+> long*: conviene clonar archify en una ruta corta, por ejemplo `%TEMP%\afy`.
 
 El estado real de cada pieza —lo que se ha ejecutado y lo que solo está escrito— vive en
 [AVANCE.md](../AVANCE.md), no aquí.
