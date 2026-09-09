@@ -43,22 +43,33 @@ def reiniciar_contadores(desde=0):
     for simbolo in _CONTADOR:
         _CONTADOR[simbolo] = desde
 
-def generar_trade():
-    """Genera un evento de trade simulado cumpliendo el contrato de datos."""
+def generar_trade(latencia_simulada=True):
+    """Genera un evento de trade simulado cumpliendo el contrato de datos.
+
+    `latencia_simulada` controla la pausa entre `ts_evento` y `ts_ingesta`.
+    Activada -lo normal- imita el retardo de red del exchange y hace que la
+    diferencia entre las dos marcas se parezca a la del flujo real.
+
+    Hay que desactivarla en la PRUEBA DE CARGA, y no es un detalle: la pausa
+    promedia 30 ms, asi que topa la generacion en unos 30 eventos por segundo.
+    Con ella puesta, una prueba que quiere inyectar 2000 eventos/s mide el
+    `sleep` y no el bus, y concluye que Kafka no pasa de 34 eventos/s.
+    """
     simbolo = random.choice(list(SIMBOLOS.keys()))
     configs = SIMBOLOS[simbolo]
-    
+
     # Simulamos una ligera variación de precio
-    variacion = random.uniform(-0.002, 0.002) 
+    variacion = random.uniform(-0.002, 0.002)
     precio = round(configs["precio_base"] * (1 + variacion), 2)
     cantidad = round(random.uniform(*configs["vol_rango"]), 4)
     importe_usdt = round(precio * cantidad, 2)
-    
+
     ahora_utc = datetime.now(timezone.utc)
     ts_evento = ahora_utc.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-    
+
     # Simulamos un ligero delay de red (latencia de ingesta)
-    time.sleep(random.uniform(0.01, 0.05))
+    if latencia_simulada:
+        time.sleep(random.uniform(0.01, 0.05))
     ts_ingesta = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
     trade = {

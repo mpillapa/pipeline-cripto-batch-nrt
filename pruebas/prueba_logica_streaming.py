@@ -241,5 +241,167 @@ class PruebaAritmeticaDelJob(unittest.TestCase):
         self.assertNotIn("_origen_max", mensaje)
 
 
+class PruebaReglasDeAlerta(unittest.TestCase):
+    """La regla de alerta esta escrita DOS VECES y estas pruebas lo vigilan.
+
+    `reglas_alertas.py` la expresa en Python puro; `job_metricas_ventana.py` la
+    expresa con `when()` de Spark. Se duplica porque una UDF de Python por fila
+    seria lenta en un stream, pero dos copias de la misma regla se separan sola
+    en cuanto alguien toca una. Estas comprobaciones fallan cuando eso pasa.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import reglas_alertas
+        cls.reglas = reglas_alertas
+        # `getOrCreate` devuelve la sesion que ya creo la otra clase si sigue
+        # viva, y una nueva si no: asi el orden de ejecucion no importa.
+        cls.spark = (
+            SparkSession.builder
+            .appName("prueba_logica_streaming")
+            .master("local[2]")
+            .getOrCreate()
+        )
+        cls.spark.sparkContext.setLogLevel("ERROR")
+
+    def test_el_job_toma_los_umbrales_del_modulo_de_reglas(self):
+        """Una sola fuente para los cortes: si el job los redefiniera, cambiar
+        el umbral en un sitio dejaria el otro con el valor viejo."""
+        self.assertEqual(job.UMBRAL_ALERTA, self.reglas.UMBRAL_PCT)
+        self.assertEqual(job.UMBRAL_ALERTA_MEDIA, self.reglas.UMBRAL_MEDIA_PCT)
+        self.assertEqual(job.UMBRAL_ALERTA_ALTA, self.reglas.UMBRAL_ALTA_PCT)
+
+    def test_el_umbral_es_estricto(self):
+        """Un valor EXACTAMENTE igual al umbral no dispara. Importa fijarlo
+        porque el umbral se calibra cerca de la mediana y el borde se toca."""
+        umbral = self.reglas.UMBRAL_PCT
+        self.assertFalse(self.reglas.supera_umbral(umbral))
+        self.assertTrue(self.reglas.supera_umbral(umbral + 0.001))
+
+    def test_una_ventana_sin_volatilidad_no_alerta(self):
+        """Ninguna alerta a partir de un nulo: seria una alerta sin motivo."""
+        self.assertFalse(self.reglas.supera_umbral(None))
+        self.assertIsNone(self.reglas.clasificar_severidad(None))
+
+    def test_la_severidad_se_evalua_de_mayor_a_menor(self):
+        """Con los cortes por defecto (MEDIA 1,00 y ALTA 2,00), un 2,5 % es
+        ALTA. Evaluar de menor a mayor devolveria MEDIA, que es justo el error
+        contrario al que interesa cometer en una alerta."""
+        r = self.reglas
+        self.assertEqual(r.clasificar_severidad(2.5, media_pct=1.0, alta_pct=2.0), "ALTA")
+        self.assertEqual(r.clasificar_severidad(1.5, media_pct=1.0, alta_pct=2.0), "MEDIA")
+        self.assertEqual(r.clasificar_severidad(0.6, media_pct=1.0, alta_pct=2.0), "BAJA")
+        # Los bordes son inclusivos hacia arriba.
+        self.assertEqual(r.clasificar_severidad(2.0, media_pct=1.0, alta_pct=2.0), "ALTA")
+        self.assertEqual(r.clasificar_severidad(1.0, media_pct=1.0, alta_pct=2.0), "MEDIA")
+
+    def test_spark_clasifica_igual_que_las_reglas_puras(self):
+        """La comprobacion que justifica la duplicacion: se pasan los mismos
+        valores por `formatear_alertas` y por `clasificar_severidad`, y tienen
+        que coincidir fila a fila."""
+        import json as _json
+
+        umbral = job.UMBRAL_ALERTA
+        # Valores alrededor de los tres cortes, incluidos los bordes exactos.
+        valores = [
+            umbral - 0.01, umbral, umbral + 0.01,
+            job.UMBRAL_ALERTA_MEDIA - 0.01, job.UMBRAL_ALERTA_MEDIA,
+            job.UMBRAL_ALERTA_ALTA - 0.01, job.UMBRAL_ALERTA_ALTA,
+            job.UMBRAL_ALERTA_ALTA + 5.0,
+        ]
+
+        filas = []
+        for i, v in enumerate(valores):
+            inicio = datetime(2026, 9, 9, 12, i % 60, 0)
+            fin = datetime(2026, 9, 9, 12, (i % 60) + 1, 0)
+            filas.append(((inicio, fin), f"SYM{i}", float(v)))
+
+        esquema = StructType([
+            StructField("window", StructType([
+                StructField("start", TimestampType()),
+                StructField("end", TimestampType()),
+            ])),
+            StructField("simbolo", StringType()),
+            StructField("volatilidad_pct", DoubleType()),
+        ])
+        df = self.spark.createDataFrame(filas, esquema)
+
+        emitidas = {}
+        for fila in job.formatear_alertas(df).collect():
+            mensaje = _json.loads(fila["value"])
+            emitidas[mensaje["simbolo"]] = mensaje
+
+        for i, v in enumerate(valores):
+            simbolo = f"SYM{i}"
+            esperado_dispara = self.reglas.supera_umbral(v, umbral)
+            self.assertEqual(
+                simbolo in emitidas, esperado_dispara,
+                f"volatilidad {v}: Spark y las reglas puras no coinciden en si dispara",
+            )
+            if esperado_dispara:
+                self.assertEqual(
+                    emitidas[simbolo]["severidad"],
+                    self.reglas.clasificar_severidad(v),
+                    f"volatilidad {v}: severidad distinta entre Spark y las reglas",
+                )
+
+    def test_la_alerta_cumple_el_contrato_campo_por_campo(self):
+        """Seccion 5 del contrato. Un campo de menos deja a Logstash sin nada
+        que enrutar, y uno de mas se mapea dinamicamente en Elasticsearch."""
+        import json as _json
+
+        esquema = StructType([
+            StructField("window", StructType([
+                StructField("start", TimestampType()),
+                StructField("end", TimestampType()),
+            ])),
+            StructField("simbolo", StringType()),
+            StructField("volatilidad_pct", DoubleType()),
+        ])
+        df = self.spark.createDataFrame(
+            [((datetime(2026, 9, 9, 12, 0, 0), datetime(2026, 9, 9, 12, 1, 0)),
+              "BTCUSDT", job.UMBRAL_ALERTA_ALTA + 1.0)],
+            esquema,
+        )
+        mensaje = _json.loads(job.formatear_alertas(df).collect()[0]["value"])
+
+        esperados = {
+            "tipo_fuente", "id_alerta", "simbolo", "regla", "umbral_pct",
+            "valor_pct", "ventana_inicio", "ventana_fin", "severidad",
+            "detalle", "ts_generada",
+        }
+        self.assertEqual(set(mensaje), esperados)
+        self.assertEqual(mensaje["tipo_fuente"], "nrt_alerta")
+        self.assertEqual(mensaje["regla"], self.reglas.REGLA)
+        self.assertEqual(mensaje["severidad"], "ALTA")
+        self.assertTrue(mensaje["ventana_inicio"].endswith("Z"))
+        self.assertTrue(mensaje["ts_generada"].endswith("Z"))
+
+    def test_cada_alerta_lleva_su_propio_identificador(self):
+        """`uuid()` tiene que evaluarse por fila. Una sola llamada fuera del
+        select daria el mismo id a todas las alertas del micro-lote, y dejaria
+        de servir para reconocer una alerta concreta."""
+        import json as _json
+
+        esquema = StructType([
+            StructField("window", StructType([
+                StructField("start", TimestampType()),
+                StructField("end", TimestampType()),
+            ])),
+            StructField("simbolo", StringType()),
+            StructField("volatilidad_pct", DoubleType()),
+        ])
+        alto = job.UMBRAL_ALERTA + 1.0
+        ventana = (datetime(2026, 9, 9, 12, 0, 0), datetime(2026, 9, 9, 12, 1, 0))
+        df = self.spark.createDataFrame(
+            [(ventana, "BTCUSDT", alto), (ventana, "ETHUSDT", alto),
+             (ventana, "SOLUSDT", alto)],
+            esquema,
+        )
+        ids = {_json.loads(f["value"])["id_alerta"]
+               for f in job.formatear_alertas(df).collect()}
+        self.assertEqual(len(ids), 3, "los id_alerta se repiten entre filas")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
