@@ -16,18 +16,22 @@ rápido reportó en vivo coincide con lo que el flujo lento confirma después.
 
 ## Estado
 
-Este README describe el proyecto completo. **No todo está construido todavía**; el estado
-real, entregable por entregable, está en **[AVANCE.md](AVANCE.md)**.
+Este README describe el proyecto completo. El estado real, entregable por entregable, está
+en **[AVANCE.md](AVANCE.md)**.
 
 | Parte | Estado |
 |---|---|
-| Camino batch — módulo `comun/` y DAGs 01–04 | Escrito y probado sin Airflow |
-| Camino near real-time | Pendiente |
-| Entorno `docker compose` | Pendiente (sesión del Día 1) |
-| Conciliación (DAG 05) | Pendiente, depende del flujo NRT |
+| Camino batch — módulo `comun/` y DAGs 01–05 | Ejecutado de punta a punta, con idempotencia verificada |
+| Camino near real-time | Funcionando. Trades del exchange real y métricas de ventana llegando a Elasticsearch |
+| Entorno `docker compose` | Completo y levantado, con los dos caminos corriendo encima |
+| Conciliación (DAG 05) | Concilia contra métricas reales del mercado |
+| Tableros de Kibana | **Pendiente.** El export existe pero no tiene paneles |
+| Alertas a `alertas.precio` | **Pendiente.** Hoy hay reglas de Kibana, que no es lo que dice el contrato |
+| Documentación de cierre | Faltan `DECISIONES.md`, `PRUEBAS.md`, el guion y las capturas |
 
-**Lo que sí se puede ejecutar hoy** está en la sección [Probar la lógica sin
-infraestructura](#probar-la-lógica-sin-infraestructura).
+**Lo que se puede ejecutar sin levantar nada** está en la sección [Probar la lógica sin
+infraestructura](#4-probar-la-lógica-sin-infraestructura); para el circuito completo, ver
+[Levantar el entorno](#5-levantar-el-entorno).
 
 ---
 
@@ -101,12 +105,38 @@ sacrifica latencia por exactitud. El proyecto implementa ambos y los compara.
 | F6 | Eventos de control | NRT | HTTP POST al 8088 | Los DAGs reportan sus hitos |
 | F7 | Logs de componentes | NRT | Socket TCP al 5000 | Observabilidad del propio pipeline |
 
+### F1 y F2: dos productores para el mismo mensaje
+
+F1 y F2 emiten **exactamente el mismo evento** y se eligen con una variable de entorno:
+
+```powershell
+# Mercado real (por defecto)
+docker compose up -d productor
+
+# Simulador: sin red, y para las pruebas de carga y deduplicación
+$env:CRIPTO_FUENTE_TRADES="simulador"; docker compose up -d productor
+```
+
+Lo único que los distingue en el dato es el campo `origen`: `exchange_ws` o `simulador`.
+
 **F2 es obligatorio, no opcional.** Si el exchange bloquea la IP o no hay internet, la
 demostración se cae. Con el simulador el pipeline es reproducible, las pruebas son
-deterministas (semilla fija) y se pueden inyectar defectos para probar la cuarentena.
+deterministas (semilla fija) y se pueden inyectar defectos para probar la cuarentena. Si
+el exchange no responde, el productor cae solo a F2, lo avisa por consola y publica un
+evento `ops_control`.
 
 > **Regla del proyecto:** el pipeline debe funcionar de punta a punta **sin internet**. Lo
 > que solo funciona con la API real, no está terminado.
+
+**Pero la conciliación es la excepción a esa regla, y por un motivo de fondo.** Comparar
+el VWAP del streaming contra el cierre de la vela del batch solo mide algo si **ambos
+lados leen el mismo mercado**. Contra el simulador, la comparación mide la distancia entre
+las constantes escritas a mano del simulador y el precio real: medido, −20 %, +36 % y
++40 % de desviación. Por eso cada métrica de ventana lleva `origen_datos` —de qué fuente
+salieron sus trades— y el DAG 05 solo concilia las que valen `exchange_ws`.
+
+El pipeline entero **funciona** sin internet. Lo que no puede hacer sin internet es
+demostrar que sus dos flujos coinciden, porque no habría con qué compararlos.
 
 **F6 y F7 hacen que el pipeline se observe a sí mismo.** Cada DAG publica por HTTP su
 inicio, fin, filas procesadas y filas en cuarentena; el productor y Spark emiten sus logs
@@ -121,6 +151,45 @@ Lo único que hace falta es Python con `pandas`, `numpy`, `pyarrow` y `requests`
 ```powershell
 python pruebas\prueba_logica_batch.py
 ```
+
+También sin infraestructura, la traducción del formato del exchange al contrato:
+
+```powershell
+python pruebas\prueba_websocket.py
+```
+
+40 comprobaciones en 8 bloques, sin red, sin Kafka y sin necesidad de tener instalado
+`websocket-client`. Cubre los tres detalles del formato del exchange que fallan **en
+silencio**: precio y cantidad llegan como cadena y no como número; el símbolo va en
+minúsculas en el canal y en mayúsculas en el campo; y `ts_evento` sale de `T`, la hora del
+trade, no de `E`, la hora del evento.
+
+### Inventario de pruebas
+
+| Prueba | Qué verifica | Necesita |
+|---|---|---|
+| `prueba_logica_batch.py` | 42 comprobaciones: reglas de calidad, transformaciones, indicadores | Python |
+| `prueba_websocket.py` | 40 comprobaciones: traducción exchange → contrato | Python |
+| `prueba_conciliacion.py` | 30 comprobaciones: aritmética y veredictos, con respuesta de ES guardada | Python |
+| `prueba_logica_streaming.py` | 7 casos: VWAP, OHLC, volatilidad, ventanas, `origen_datos`, campos de salida | Contenedor de Spark |
+| `prueba_latencia.py` | Latencia por etapas, con percentiles | Entorno levantado con datos |
+| `prueba_carga.py` | Rendimiento del productor y deduplicación | Entorno levantado |
+
+La de Spark corre dentro de su contenedor, con `spark-submit` y no con `python`:
+
+```powershell
+docker compose run --rm --no-deps -v "${PWD}/pruebas:/pruebas" `
+    spark-streaming /opt/spark/bin/spark-submit /pruebas/prueba_logica_streaming.py
+```
+
+**Importa `calcular_metricas` del job en vez de reimplementarlo.** Es la diferencia entre
+probar el código que corre en producción y probar una copia que solo existe en la prueba;
+la versión anterior hacía lo segundo y pasaba aunque el job estuviera roto.
+
+> **Aviso:** `prueba_carga.py` publica trades del simulador en el mismo topic que usa el
+> pipeline. Si se ejecuta con el productor real en marcha, contamina las ventanas de esa
+> hora con `origen_datos = exchange_ws+simulador` y la conciliación las descartará.
+> Ejecutarla con el productor detenido.
 
 Tarda segundos y ejecuta 42 comprobaciones en 12 bloques. La más importante es el bloque
 2: verifica que **cada defecto que inyecta el generador sea detectado por la regla que le
@@ -141,25 +210,94 @@ confundan con datos reales**, ni en el reporte ni en los paneles.
 
 ## 5. Levantar el entorno
 
-> **Pendiente.** El `docker-compose.yml` se construye en la sesión del Día 1, fusionando
-> el entorno ELK del Taller 2 con el de Kafka y Spark. Esta sección se completa entonces.
-
-Puertos previstos, elegidos para no chocar con los entornos de los talleres anteriores,
-que ya ocupan 8080, 8081, 3306, 3307 y 5432:
-
-| Servicio | Puerto |
-|---|---|
-| Kibana | 5601 |
-| Elasticsearch | 9200 |
-| Logstash — beats / HTTP / TCP | 5044 / 8088 / 5000 |
-| Airflow UI | 8092 |
-| Kafka UI | 8093 |
-| Kafka (externo) | 9095 |
-| MySQL | 3308 |
-| Spark — UI de la aplicación | 4040 |
-
 **Antes de levantar este entorno hay que detener los otros dos** (`taller-airflow-5dags` y
 `kafka-spark-zeppelin`). Con 16 GB no caben en simultáneo.
+
+### Orden de arranque
+
+El orden importa. `productor` y `spark-streaming` declaran `restart: on-failure`, así que
+levantarlos antes que Kafka no falla con un mensaje claro: los deja **reintentando en
+bucle** contra un bus que no existe, llenando la consola de trazas que no dicen cuál era
+el problema.
+
+```bash
+# 1. Bases de datos y orquestador
+docker compose up -d postgres mysql airflow-init
+docker compose up -d airflow-webserver airflow-scheduler
+
+# 2. Bus de eventos (kafka-init crea los topics y termina)
+docker compose up -d zookeeper kafka kafka-init kafka-ui
+
+# 3. Almacenamiento y visualización (elasticsearch-init aplica la plantilla y termina)
+docker compose up -d elasticsearch elasticsearch-init kibana logstash
+
+# 4. Solo cuando lo anterior está sano: productores y procesamiento
+docker compose ps            # comprobar que no queda ninguno reiniciándose
+docker compose up -d productor spark-streaming
+```
+
+Para apagar sin perder nada: `docker compose stop`. **`docker compose down -v` borra los
+volúmenes**, y con ellos los índices de Elasticsearch, las tablas de MySQL y los tableros
+de Kibana.
+
+### Verificar que el circuito está cerrado
+
+```bash
+# Trades y métricas entrando
+curl -s "http://localhost:9200/_cat/indices/cripto-*?v&h=index,docs.count&s=index"
+
+# Qué fuente alimenta los trades: exchange_ws o simulador
+curl -s "http://localhost:9200/cripto-nrt_trade-*/_search?size=0" \
+  -H 'Content-Type: application/json' \
+  -d '{"aggs":{"por_origen":{"terms":{"field":"origen"}}}}'
+
+# Salida de Spark directamente del topic
+docker compose exec kafka kafka-console-consumer \
+  --bootstrap-server kafka:29092 --topic metricas.1min --from-beginning --max-messages 3
+```
+
+En Kibana (`http://localhost:5602/app/discover`), el patrón de índice es `cripto-*`.
+
+### Ejecutar las pruebas que necesitan infraestructura
+
+Las que no la necesitan están en la [sección 4](#4-probar-la-lógica-sin-infraestructura).
+
+```bash
+# Lógica de Spark: DENTRO del contenedor, que es donde están pyspark y Java.
+# Con spark-submit y no con python3: pyspark vive en /opt/spark/python y solo
+# spark-submit lo pone en el PYTHONPATH. `--no-deps` evita arrastrar a Kafka,
+# que esta prueba no necesita.
+docker compose run --rm --no-deps --entrypoint /opt/spark/bin/spark-submit \
+  spark-streaming --master "local[2]" /opt/spark/pruebas/prueba_logica_streaming.py
+
+# Latencia de extremo a extremo (p50/p95/p99) — requiere Elasticsearch con datos
+python pruebas/prueba_latencia.py
+
+# Carga sobre el bus — requiere Kafka
+python pruebas/prueba_carga.py
+```
+
+### Puertos
+
+Puertos, elegidos para no chocar con los entornos de los talleres anteriores, que ya
+ocupan 8080, 8081, 3306, 3307 y 5432. **Son los del `docker-compose.yml`, verificados con
+el entorno levantado:**
+
+| Servicio | Puerto en el host | Puerto dentro de la red de Docker |
+|---|---|---|
+| Kibana | **5602** | 5601 |
+| Elasticsearch | 9200 | 9200 |
+| Logstash — beats / HTTP / TCP | 5044 / **8089** / 5000 | 5044 / 8088 / 5000 |
+| Airflow UI | 8092 | 8080 |
+| Kafka UI | 8093 | 8080 |
+| Kafka | 9095 | 29092 |
+| MySQL | 3308 | 3306 |
+| Spark — UI de la aplicación | 4040 | 4040 |
+
+**Las dos columnas no son un adorno.** Kafka anuncia dos listeners y hay que usar el
+correcto según dónde se ejecute el código: `kafka:29092` desde dentro de la red de Docker,
+`localhost:9095` desde Windows. Lo mismo con Logstash: los DAGs le envían al 8088 porque
+corren dentro de la red; desde el host el mismo input está en el 8089.
 
 ---
 
@@ -168,10 +306,29 @@ que ya ocupan 8080, 8081, 3306, 3307 y 5432:
 ```
 ├── PLAN.md                     Plan de ejecución de la semana
 ├── AVANCE.md                   Estado real y bitácora de problemas resueltos
+├── docker-compose.yml          Entorno completo: batch, NRT y ELK
+├── Dockerfile.airflow          Airflow + pyarrow
+├── Dockerfile.spark            Spark + los JAR del conector de Kafka horneados
+├── Dockerfile.productor        Productor + websocket-client y kafka-python
 ├── contratos/
 │   └── CONTRATO_DATOS.md       Interfaz entre el camino batch y el NRT
 ├── sql/                        DDL. Fuente única del esquema de MySQL
-├── dags/
+├── ingesta_streaming/          ── Camino NRT
+│   ├── cliente_websocket.py    F1: exchange real; traducción pura al contrato
+│   ├── simulador_trades.py     F2: respaldo sin red
+│   ├── productor_kafka.py      Elige fuente y publica en trades.crudo
+│   └── observabilidad.py       Eventos ops_control del productor
+├── procesamiento_streaming/
+│   ├── esquemas_spark.py       Esquema estricto del trade
+│   ├── job_metricas_ventana.py Ventanas de 1 min con watermark y dedup
+│   └── reglas_alertas.py       Alertas (decisión de diseño abierta)
+├── logstash/
+│   └── pipeline_cripto/        Único escritor hacia Elasticsearch
+├── elasticsearch/
+│   └── plantillas/cripto.json  Tipos explícitos, no mapeo dinámico
+├── kibana/
+│   └── tableros.ndjson         Tableros exportados
+├── dags/                       ── Camino batch
 │   ├── comun/                  Una capa por archivo
 │   │   ├── config.py           Parámetros, umbrales, conexiones
 │   │   ├── utilidades.py       Lote_id, rutas, NDJSON, tiempo en UTC
@@ -184,13 +341,15 @@ que ya ocupan 8080, 8081, 3306, 3307 y 5432:
 │   ├── dag_01_ingesta_batch.py
 │   ├── dag_02_calidad.py
 │   ├── dag_03_transformacion.py
-│   └── dag_04_carga_mysql.py
+│   ├── dag_04_carga_mysql.py
+│   └── dag_05_conciliacion.py  Compara el flujo NRT contra el batch
 ├── datos_semilla/              Catálogo de activos, versionado
-├── pruebas/                    Pruebas ejecutables sin infraestructura
+├── pruebas/                    Cuatro corren sin infraestructura; tres la necesitan
 ├── docs/
+│   ├── ARQUITECTURA.md         Papel de cada servicio
 │   └── REGLAS_NEGOCIO.md       Catálogo de reglas, fórmulas y supuestos
 └── datos/                      Se crea al ejecutar; no se versiona
-    └── bronce/ cuarentena/ plata/ exportado/
+    └── bronce/ cuarentena/ plata/ exportado/ checkpoints/
 ```
 
 **Principio de organización.** Los DAGs y el job de Spark **solo orquestan y
@@ -231,6 +390,7 @@ visible.
 |---|---|
 | [PLAN.md](PLAN.md) | Alcance, arquitectura, reparto, cronograma, riesgos |
 | [AVANCE.md](AVANCE.md) | Estado por entregable y bitácora de problemas resueltos |
+| [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) | Papel de cada servicio y qué pasaría si no estuviera |
 | [contratos/CONTRATO_DATOS.md](contratos/CONTRATO_DATOS.md) | Esquemas, tipos, unidades y nombres prohibidos |
 | [docs/REGLAS_NEGOCIO.md](docs/REGLAS_NEGOCIO.md) | Catálogo de reglas, fórmulas y supuestos |
 

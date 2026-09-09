@@ -8,7 +8,7 @@ del problema y cómo se resolvió.
 Alimenta directamente `docs/DECISIONES.md` y la parte de la exposición donde hay que
 explicar *cómo resolvieron problemas específicos*.
 
-**Última actualización:** 6 de septiembre de 2026
+**Última actualización:** 9 de septiembre de 2026
 **Plan de referencia:** [PLAN.md](PLAN.md)
 
 Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
@@ -19,10 +19,52 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 
 | Camino | Progreso | Comentario |
 |---|---|---|
-| Andamiaje conjunto (Día 1) | PENDIENTE | Depende de la sesión del lunes 7 |
-| Batch — Manuel | **Funcionando** | Corrió de punta a punta con datos reales, dos veces, con idempotencia verificada. Falta el DAG 05, que orquesta una lógica de conciliación ya escrita y probada |
-| NRT — Estéfano | PENDIENTE | Sin iniciar; se apoya en el Taller 2 |
+| Andamiaje conjunto | **Hecho** | Compose unificado levantado y verificado con los dos caminos corriendo encima |
+| Batch — Manuel | **Funcionando** | Corrió de punta a punta con datos reales, dos veces, con idempotencia verificada. Los cinco DAGs, incluido el 05 de conciliación, ejecutados |
+| NRT — Estéfano | **Funcionando** | Fusionado y corregido el 8 de septiembre. Trades y métricas llegan a Elasticsearch |
+| Integración de los dos caminos | **Circuito cerrado** | Los tres flujos indexados: batch, trades y métricas de ventana |
+| Conciliación entre flujos | **Midiendo el mercado real** | Fuente F1 (WebSocket) implementada el 9 de septiembre. Los dos flujos leen el mismo exchange, que es lo que hace que la comparación signifique algo |
 | Documentación | Adelantada | Plan, contrato, reglas de negocio, README y este archivo |
+
+**Estado del circuito, recontado el 9 de septiembre a las 03:50 UTC** tras migrar
+Elasticsearch a un volumen persistente (ver bitácora del mismo día):
+
+| Índice en Elasticsearch | Documentos | Origen |
+|---|---|---|
+| `cripto-batch_ohlcv` | 1 092 | Airflow → Parquet → MySQL → NDJSON → Logstash |
+| `cripto-nrt_trade-2026.09.09` | 318 581 | Exchange y simulador → Kafka → Logstash |
+| `cripto-nrt_metrica-2026.09.09` | 516 | Trades → Kafka → **Spark** → Kafka → Logstash |
+| `cripto-batch_conciliacion` | 6 | DAG 05, comparando los dos flujos |
+| `cripto-ops_control-2026.09.09` | 5 | El pipeline observándose a sí mismo |
+
+Reparto de los trades por fuente, que es la evidencia de que F1 quedó enchufada:
+`exchange_ws` 285 422, `simulador` 33 159.
+
+> **Un índice a vigilar.** `cripto-desconocido-2026.09.09` tiene 1 documento: algo llegó a
+> Logstash sin un `tipo_fuente` que la configuración supiera enrutar. Un solo documento no
+> molesta, pero conviene averiguar cuál es antes de la demo, porque el patrón `cripto-*` de
+> Kibana sí lo incluye.
+
+Las métricas de Spark cumplen el contrato campo por campo. Comprobación aritmética sobre
+una ventana real: `volumen_usdt / volumen_base` = 351 251,94 / 103,2919 = 3400,58, que
+coincide con el `vwap` publicado. Y `volatilidad_pct` = (3406,76 − 3393,26) / 3400,58 ×
+100 = 0,397, que coincide con el valor emitido.
+
+**Con la fuente real, 9 de septiembre a las 01:31 UTC.** Primera ventana alimentada por el
+exchange en vez del simulador, contra el cierre de la vela horaria del batch:
+
+| Símbolo | VWAP de Spark | Cierre real del batch | Desviación | Trades en 1 min |
+|---|---|---|---|---|
+| BTCUSDT | 78 756,73 | 78 774,65 | 0,02 % | 1 122 |
+| ETHUSDT | 2 492,68 | 2 496,28 | 0,14 % | 688 |
+| SOLUSDT | 103,53 | 103,78 | 0,24 % | 169 |
+
+Las tres por debajo del umbral de 0,5 % del contrato. Compárese con lo que daba el
+simulador el día anterior — −20 %, +36 % y +40 % — y con su volumen: BTC registra ahora
+1 122 trades en **un minuto**, frente a los ~6 700 por **hora** del simulador.
+
+Comprobación aritmética de la ventana de BTC: 878 433,62 / 11,15376 = 78 756,7, que
+coincide con el `vwap` publicado.
 
 ---
 
@@ -30,18 +72,20 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 
 | Entregable | Estado | Notas |
 |---|---|---|
-| Repositorio en GitHub | LISTO | `mpillapa/pipeline-cripto-batch-nrt`, con la base subida. Falta agregar a Estéfano como colaborador |
-| `docker-compose.yml` unificado | EN CURSO | **Mitad escrita, levantada y verificada**: Postgres, MySQL con el DDL montado, Airflow (init, webserver, scheduler, cli), Zookeeper, Kafka, creación de topics y Kafka UI. El pipeline batch corrió dos veces con datos reales sobre este compose. Falta pegar Elasticsearch, Kibana, Logstash, Spark y el productor, en el bloque marcado al final del archivo |
-| `Dockerfile.spark` con conector de Kafka horneado | PENDIENTE | **Riesgo número uno del proyecto.** Verificar sin red el mismo lunes |
-| `Dockerfile.airflow` | LISTO | Imagen propia con `pyarrow`, instalado contra el archivo de restricciones oficial de Airflow. Sin construir todavía |
+| Repositorio en GitHub | LISTO | `mpillapa/pipeline-cripto-batch-nrt`. Tres ramas publicadas: `main`, `batch/manuel` y `nrt/estefano` |
+| `docker-compose.yml` unificado | LISTO | Completo y levantado: Postgres, MySQL con el DDL montado, Airflow, Zookeeper, Kafka con sus topics, Kafka UI, Elasticsearch, Kibana, Logstash, Spark y el productor. Los dos caminos han corrido encima |
+| `Dockerfile.spark` con conector de Kafka horneado | LISTO | Los cuatro JAR dentro de la imagen. **Deja de ser el riesgo número uno**: el job arranca sin descargar nada |
+| `Dockerfile.airflow` | LISTO | Imagen propia con `pyarrow`, construida y en uso (`pipeline-cripto-airflow:2.10.4`) |
+| `Dockerfile.productor` | LISTO | Imagen del productor, con `websocket-client` y `kafka-python` |
 | `requisitos/airflow.txt` | LISTO | Sin versiones fijadas: las decide el archivo de restricciones |
 | `.env.example` | LISTO | Valores ficticios, incluidos los límites de memoria de Elasticsearch y Logstash |
-| Mapa de puertos | LISTO | Sección 5.5 del plan |
-| Conexiones de Airflow en el compose | PENDIENTE | Hacen falta dos: `mysql_cripto` y `fs_cripto`. La segunda la usa el `FileSensor` del DAG 03; **no sirve `fs_default`**, que solo existe si la base se inicializa con `--load-default-connections` |
-| Montaje de `datos_semilla/` en el contenedor | PENDIENTE | El DAG 04 lo lee desde `/opt/airflow/datos_semilla` |
-| `contratos/CONTRATO_DATOS.md` | EN CURSO | Borrador escrito. **No cerrado hasta que Estéfano lo revise** |
+| Mapa de puertos | LISTO | Sección 5 del README, verificado con el entorno arriba |
+| Conexiones de Airflow en el compose | LISTO | `AIRFLOW_CONN_MYSQL_CRIPTO` y `AIRFLOW_CONN_FS_CRIPTO`, por variable de entorno y no en la base de metadatos: por eso **no aparecen en `airflow connections list`** y sí funcionan. La segunda la usa el `FileSensor` del DAG 03; **no sirve `fs_default`**, que solo existe si la base se inicializa con `--load-default-connections` |
+| Montaje de `datos_semilla/` en el contenedor | LISTO | El DAG 04 lo lee desde `/opt/airflow/datos_semilla` |
+| Persistencia de Elasticsearch | LISTO | Volumen `elasticsearch-datos`. Añadido el 9 de septiembre, ver bitácora: hasta entonces los índices vivían en la capa del contenedor |
+| `contratos/CONTRATO_DATOS.md` | EN CURSO | Aplicado por los dos caminos, pero la **sección 10 sigue redactada como cinco decisiones abiertas** cuando las cinco ya se resolvieron en el código tal y como estaban propuestas: validación en el productor, 3 particiones, retención de 24 h, `ops_log` a Elasticsearch y los tres símbolos. Falta pasarlas al cuerpo del contrato y borrar esa sección |
 | `sql/01_esquemas.sql` y `sql/02_tablas.sql` | LISTO | Cuatro tablas. Fuente única del esquema |
-| Plantilla de índice de Elasticsearch | PENDIENTE | Estéfano. Tipos explícitos, no mapeo dinámico |
+| Plantilla de índice de Elasticsearch | LISTO | 24 campos con tipos explícitos, aplicada al arrancar por `elasticsearch-init` |
 | Diagrama de arquitectura | PENDIENTE | Sirve para el documento y la exposición |
 
 ---
@@ -65,7 +109,7 @@ Leyenda: `LISTO` · `EN CURSO` · `PENDIENTE` · `BLOQUEADO`
 | `dag_02_calidad` | LISTO | Bifurcación promover/bloquear, cuarentena con motivo |
 | `dag_03_transformacion` | LISTO | Sensor + transformación + verificación de la zona plata |
 | `dag_04_carga_mysql` | LISTO | Carga idempotente + exportación NDJSON para Logstash |
-| `dag_05_conciliacion` | LISTO | Corre y termina en `success` aunque el flujo NRT no exista todavía. Empezará a producir filas sin ningún cambio de código |
+| `dag_05_conciliacion` | LISTO | Ya no concilia contra el vacío: 6 documentos en `cripto-batch_conciliacion`, comparando ventanas de Spark alimentadas por el exchange contra el cierre de la vela del batch |
 | `datos_semilla/catalogo_activos.csv` | LISTO | Diez activos con nombre y categoría |
 | `docs/REGLAS_NEGOCIO.md` | LISTO | R01–R08, T01–T03, fórmulas, supuestos y parámetros |
 | `README.md` | LISTO | Marca explícitamente lo que aún no existe |
@@ -117,53 +161,527 @@ verificar es lo que depende del flujo NRT: que la conciliación produzca filas r
 
 ## 4. Camino NRT — Estéfano
 
+> **Nota sobre los estados.** Se reserva `LISTO` para lo que se ha **ejecutado y
+> comprobado**; `ESCRITO` es código que existe y compila pero que todavía no se ha visto
+> funcionar. La distinción no es burocracia: en la revisión del 8 de septiembre varias
+> piezas marcadas como listas resultaron no completar el circuito, y un registro que no
+> distingue las dos cosas deja de servir para saber qué falta.
+
 | Entregable | Estado | Notas |
 |---|---|---|
-| `ingesta_streaming/simulador_trades.py` | LISTO | Obligatorio, no opcional |
-| `ingesta_streaming/productor_kafka.py` | LISTO | Con caída al simulador si no hay red |
-| Topics de Kafka | LISTO | Creados por el compose, no a mano |
-| `procesamiento_streaming/job_metricas_ventana.py` | LISTO | **Pieza nueva. En pareja el Día 3** |
-| `procesamiento_streaming/reglas_alertas.py` | LISTO | Automatiza configuración en Kibana |
-| `logstash/pipeline/logstash.conf` | LISTO | Extensión del Taller 2 con tres inputs de Kafka |
-| Plantillas de índice | LISTO | |
-| Tableros de Kibana | LISTO | Exportados como NDJSON, contiene "Precio por tiempo" |
-| `pruebas/prueba_latencia.py` | LISTO | Mide p50, p95 y p99 de extremo a extremo |
-| `pruebas/prueba_logica_streaming.py` | LISTO | Valida deduplicación y cálculo de VWAP |
-| `pruebas/prueba_carga.py` | LISTO | Estresa inyección a 500, 1000 y 2000 EPS |
+| `ingesta_streaming/simulador_trades.py` | LISTO | Ejecutado. `id_trade` corregido a contador entero por símbolo: era aleatorio y eso hacía **imposible** probar la deduplicación |
+| `ingesta_streaming/cliente_websocket.py` | LISTO | Fuente F1. Conexión al exchange real y traducción pura al contrato. 285 422 trades con `origen=exchange_ws` indexados |
+| `ingesta_streaming/observabilidad.py` | LISTO | Eventos `ops_control` del productor, con la biblioteca estándar |
+| `ingesta_streaming/productor_kafka.py` | LISTO | Elige fuente por `CRIPTO_FUENTE_TRADES`, con caída al simulador y aviso. Las dos fuentes se consumen como generadores con la misma interfaz |
+| Topics de Kafka | LISTO | Los crea `kafka-init`. Verificados con tráfico real de las dos fuentes |
+| `procesamiento_streaming/job_metricas_ventana.py` | LISTO | 516 métricas emitidas y verificadas aritméticamente contra el `vwap` publicado. Reescrito el 8 de septiembre: emitía 5 campos de los 10 del contrato, sin `volumen_usdt` ni `n_trades`, que son los que necesita la conciliación. Ver bitácora |
+| `procesamiento_streaming/esquemas_spark.py` | LISTO | Ampliado de 5 a los 11 campos del contrato |
+| `logstash/pipeline_cripto/logstash.conf` | LISTO | Tenía 1 input de 5. Añadidos `metricas.1min`, `alertas.precio`, el `file` del NDJSON batch, y los del 8088 y 5000. Los cinco flujos han indexado |
+| Plantilla de índice de Elasticsearch | LISTO | El JSON estaba bien, pero nada lo aplicaba. Añadido el servicio `elasticsearch-init` |
+| `pruebas/prueba_websocket.py` | LISTO | 8 bloques, todas pasan. No necesita red ni Kafka |
+| Tableros de Kibana | PENDIENTE | `kibana/tableros.ndjson` exporta 2 objetos: un patrón de índice `cripto-*` y un tablero **sin paneles** (`"hits":0`). Es el entregable de visualización y ahora mismo está vacío |
+| `procesamiento_streaming/reglas_alertas.py` | PENDIENTE | Crea una regla en Kibana en vez de publicar en `alertas.precio`. Declara `rule_type_id: metrics.alert.threshold` pero le pasa parámetros de `es_query`, y apunta a `localhost:5602`, que no resuelve desde dentro de la red. **Decisión de diseño abierta**, ver sección 6 |
+| `pruebas/prueba_latencia.py` | ESCRITO | Sin ejecutar. Ahora es posible: el job ya emite `ts_procesado` y hay 318 581 trades indexados sobre los que medir |
+| `pruebas/prueba_logica_streaming.py` | LISTO | **Ejecutada por fin el 9 de septiembre: 7 de 7.** Faltaban dos cosas para poder correrla, ver bitácora: montar `pruebas/` en el contenedor y lanzarla con `spark-submit` en vez de `python3` |
+| `pruebas/prueba_carga.py` | ESCRITO | Sin ejecutar |
+| `Dockerfile.spark` | LISTO | Los cuatro JAR horneados. **Resuelve el riesgo número uno del proyecto**: el job arrancó sin descargar nada |
+| Servicios ELK en el compose | LISTO | Elasticsearch, Kibana y Logstash 7.17.10. `spark-streaming` no tenía `command`: corregido. Elasticsearch no tenía volumen: corregido el 9 de septiembre |
+| Alertas en Kibana | ESCRITO | Reglas de tipo *Elasticsearch query* creadas y disparando. Hubo que añadir `XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY` a Kibana —sin esa clave el guardado de reglas falla— y ampliar la ventana de evaluación, porque la regla evaluaba antes de que el documento estuviera indexado y no encontraba nada |
 
 ---
 
-## 4.bis Qué puede arrancar Estéfano ahora mismo
+## 4.bis Qué queda por hacer
 
-Todo lo de esta lista está especificado y **no depende de nada más**. Se puede trabajar
-en el entorno del Taller 2, sin esperar al `docker-compose.yml` unificado.
+Los dos caminos funcionan y el circuito está cerrado. Lo que falta ya no es
+infraestructura: es **evidencia y documentación**, que entre las dos pesan el 30 % de la
+rúbrica. Ordenado por lo que más cuesta si no se hace.
 
-| Se puede empezar ya | Dónde está la especificación |
-|---|---|
-| `simulador_trades.py` | Esquema del evento completo: contrato, sección 3 |
-| `productor_kafka.py` | Topic `trades.crudo`, clave = `simbolo`: contrato, sección 3 |
-| Input de Kafka en `logstash.conf` para `trades.crudo` | Convención `tipo_fuente` → índice: contrato, sección 1 |
-| Input `file` para el NDJSON del batch | Ruta, codec y patrón: contrato, sección 6.bis |
-| Plantillas de índice de Elasticsearch | Tipos de cada campo: contrato, secciones 2, 3, 4 y 6 |
-| Primeros paneles de Kibana sobre `cripto-nrt-trade-*` | |
-| Esqueleto del job de Spark | Esquema de salida ya fijado: contrato, sección 4 |
+| Pendiente | De quién | Por qué importa |
+|---|---|---|
+| Tablero de Kibana con paneles reales | Estéfano | `kibana/tableros.ndjson` exporta un tablero vacío. Es *el* entregable de visualización, y en la exposición es lo que se enseña |
+| Decidir el destino de las alertas | Estéfano | El contrato dice `alertas.precio` desde Spark; lo implementado son reglas de Kibana. Hay que cerrar la discrepancia en un sentido o en el otro, y que el contrato y el código digan lo mismo |
+| Ejecutar `prueba_latencia` y `prueba_carga` | Estéfano | Los percentiles p50/p95/p99 y el resultado de carga son las cifras que sostienen «resultados y validación». Hay 318 581 trades indexados sobre los que medir |
+| `docs/DECISIONES.md` | Los dos | El material bruto ya está en la bitácora de la sección 5. Es trabajo de redacción, no de investigación |
+| `docs/PRUEBAS.md` con los resultados | Los dos | Inventario de las siete pruebas y qué demuestra cada una |
+| Diagrama de arquitectura | Los dos | El de texto del README sirve de base. Hace falta uno presentable |
+| `capturas/` y `docs/GUIA_CAPTURAS.md` | Los dos | Respaldo por si la demo en vivo falla |
+| `docs/GUION_EXPOSICION.md` y dos ensayos | Los dos | 20 minutos cronometrados |
+| Cerrar la sección 10 del contrato | Manuel | Las cinco decisiones ya se tomaron en el código; el documento sigue presentándolas como abiertas |
+| Averiguar `cripto-desconocido-2026.09.09` | Estéfano | Un documento llegó a Logstash sin `tipo_fuente` enrutable. Es uno solo, pero el patrón `cripto-*` de Kibana lo incluye |
 
-**Lo que NO puede cerrar todavía:**
-
-| Bloqueado | Por qué |
-|---|---|
-| Las cinco decisiones abiertas del contrato | Sección 10 del contrato. Son suyas: validación en productor o en Spark, particiones, retención, destino de `ops_log`, símbolos definitivos |
-| El punto de montaje del volumen compartido | Airflow escribe el NDJSON y Logstash tiene que ver esa misma carpeta. Es la única dependencia física entre los dos caminos, y se acuerda el Día 1 |
-| Prueba de extremo a extremo | Necesita el compose unificado |
-
-**Lo primero que conviene que haga es el simulador, no el productor del WebSocket.** Con
-el simulador funcionando, todo lo demás —Kafka, Logstash, Spark, Kibana— se puede
-desarrollar y probar sin depender de que el exchange responda. El productor real se
-enchufa después, contra un pipeline que ya funciona.
+**Sobre el orden.** El tablero y las dos pruebas van primero porque son las únicas que
+necesitan el entorno levantado y datos frescos. La documentación se puede escribir con
+todo apagado.
 
 ---
 
 ## 5. Bitácora de hallazgos y decisiones
+
+### 2026-09-09 · Elasticsearch guardaba 135 MB de evidencia donde un `down` los borra
+
+Revisando por qué el productor llevaba media hora escupiendo errores en la consola
+aparecieron dos cosas, una ruidosa y sin importancia y otra callada y grave.
+
+**La ruidosa.** Kafka, Zookeeper, Elasticsearch, Kibana y Logstash estaban parados con
+código de salida 143 —SIGTERM, un apagado limpio, no una caída—, mientras `productor` y
+`spark-streaming` seguían levantados. Los dos declaran `restart: on-failure`, así que
+llevaban 26 minutos reintentando contra un bus que no existía:
+
+```
+Conectando a Kafka en kafka:29092...
+kafka.errors.NoBrokersAvailable: NoBrokersAvailable
+```
+
+No hubo ningún error de código. Fue orden de arranque: se levantaron los productores sin
+levantar antes el bus y el ELK. La lección práctica es que `restart: on-failure` sobre un
+servicio que depende de otro **convierte una dependencia no satisfecha en un traceback
+repetido cada pocos segundos**, y ese ruido esconde lo que sí importa.
+
+**La callada.** `docker inspect elasticsearch_cripto` devolvía `Mounts: []`. El servicio
+no declaraba ningún volumen, de modo que los índices vivían en la capa escribible del
+contenedor. Eso sobrevive a un `stop` —por eso nadie lo había notado— y **lo borra
+cualquier `down`**, que es justo la orden que uno teclea sin pensar al terminar el día.
+Lo que estaba en juego: 318 581 trades, 516 métricas de ventana, los 1 092 documentos del
+batch y las 6 filas de conciliación. 135 MB que no se regeneran, porque incluyen las
+ventanas del exchange real de una franja horaria que ya pasó.
+
+El `.gitignore` llevaba desde el principio una regla para `elasticsearch/datos/`, es decir
+que el volumen **se había dado por hecho sin llegar a escribirse**. Ignorar una ruta que
+nadie crea no da ningún error: la regla parecía la prueba de que el volumen existía.
+
+**Rescate y arreglo.** El contenedor estaba parado, no eliminado, así que los datos aún
+estaban ahí. `docker cp` desde el contenedor parado, volcado a un volumen nombrado nuevo
+con `chown -R 1000:0`, y el servicio recreado apuntando a él. Los 14 shards recuperados.
+
+**Volumen nombrado y no `./elasticsearch/datos`.** Un bind mount en Windows le entrega al
+contenedor un directorio cuyo propietario no es el uid 1000 con el que corre
+Elasticsearch, y el nodo no arranca por permisos. Es la razón por la que la regla del
+`.gitignore` no habría funcionado ni escribiéndola.
+
+**Kibana no necesita volumen propio**, aunque parezca que sí: sus tableros y patrones de
+índice se guardan en el índice `.kibana` dentro de Elasticsearch. Con este volumen quedan
+cubiertos los dos.
+
+---
+
+### 2026-09-09 · La prueba de Spark no era inejecutable, era inalcanzable
+
+`prueba_logica_streaming.py` llevaba días marcada como *escrita pero sin ejecutar*, con el
+motivo «importa `pyspark`, que no está instalado en la máquina; hay que correrla dentro
+del contenedor». El motivo era correcto y la conclusión no: dentro del contenedor tampoco
+corría, por dos razones distintas que se descubren una detrás de otra.
+
+**El contenedor no veía el archivo.** `spark-streaming` montaba `./procesamiento_streaming`
+y `./datos/checkpoints`, y nada más. `pruebas/` no estaba montado, así que el único sitio
+donde la prueba podía correr era el único sitio donde no existía. Añadido
+`./pruebas:/opt/spark/pruebas:ro`.
+
+**`python3` no encuentra pyspark; `spark-submit` sí.** En la imagen oficial de Spark,
+pyspark vive en `/opt/spark/python` y no está instalado como paquete del sistema. Lanzar
+`python3 la_prueba.py` da `ModuleNotFoundError: No module named 'pyspark'` incluso con
+Spark entero en la imagen, porque es `spark-submit` quien arma el `PYTHONPATH`. El comando
+que funciona:
+
+```bash
+docker compose run --rm --no-deps --entrypoint /opt/spark/bin/spark-submit \
+  spark-streaming --master "local[2]" /opt/spark/pruebas/prueba_logica_streaming.py
+```
+
+`--no-deps` importa: sin él, Docker levanta Kafka y espera a que esté sano para una prueba
+que no toca Kafka.
+
+**Resultado: 7 de 7.** Cubren lo que había que cubrir: que el VWAP pondera por cantidad y
+no es el promedio simple, que `volatilidad_pct` es rango relativo y no desviación típica,
+que OHLC sale del orden temporal y no del de llegada, que `ventana_inicio` es inclusivo y
+`ventana_fin` exclusivo, y que `origen_datos` distingue la fuente —que es de lo que
+depende la regla C01 de la conciliación.
+
+**Lo que esto deja como lección**: una prueba que nadie ha conseguido ejecutar no es
+evidencia de nada, por muy escrita que esté. Las otras dos que siguen sin correr
+—`prueba_latencia` y `prueba_carga`— están exactamente en esa situación.
+
+---
+
+### 2026-09-09 · Dos pruebas que pasaban sin probar nada
+
+Al ejecutar por primera vez las dos pruebas que nunca se habían corrido, ninguna falló.
+Las dos estaban rotas.
+
+**`prueba_latencia.py` medía 0,00 ms en p50, p95 y p99.** No era una latencia excelente:
+era una resta de un valor consigo mismo. Medía `@timestamp − ts_evento`, y Logstash **fija
+`@timestamp` a partir de `ts_evento`**:
+
+```
+date { match => ["ts_evento", "ISO8601"] target => "@timestamp" }
+```
+
+La diferencia es cero por construcción, en cualquier máquina y con cualquier volumen. Un
+resultado que además es el que uno querría ver, lo que lo hace más difícil de cuestionar.
+
+**`prueba_logica_streaming.py` decía "aplicamos la misma lógica del job principal" y a
+continuación la copiaba** dentro del propio archivo de prueba. Dos consecuencias:
+
+1. Si el job cambiaba, la prueba seguía pasando. No probaba el job: probaba una copia del
+   job que solo existía dentro de la prueba.
+2. La copia ni siquiera era fiel. Deduplicaba con `dropDuplicates(["id_trade"])`, y el job
+   usa `dropDuplicatesWithinWatermark(["simbolo", "id_trade"])`. Los datos de ejemplo no
+   tenían ningún `id_trade` repetido entre símbolos distintos, así que las dos versiones
+   daban el mismo resultado y la diferencia nunca se manifestaba. Además declaraba
+   `id_trade` como `StringType`, cuando el contrato lo define como `long`.
+
+**El patrón común es el mismo que el del índice con guion medio y el del campo mapeado
+como `text`:** ninguno de los tres da error. Todos devuelven un resultado plausible. En
+una prueba eso es peor que en el código, porque la prueba es justamente lo que debería
+avisar.
+
+**Qué se hizo**
+
+`prueba_latencia.py` se reescribió para medir solo lo que los campos permiten medir:
+
+| Etapa | Cálculo | Resultado |
+|---|---|---|
+| 1. Exchange → productor | `ts_ingesta − ts_evento` | p95 62 ms, **58,6 % de valores negativos** |
+| 2. Cierre de ventana → métrica | `ts_procesado − ventana_fin` | p50 87 s |
+| 3. Kafka → Logstash → ES | — | **No medible**, se declara como hueco |
+
+El 58,6 % de valores negativos no es un defecto: es la medida de que **las dos marcas
+vienen de relojes distintos**. `ts_evento` lo pone el exchange y `ts_ingesta` el
+contenedor, que va unos 12 ms adelantado. Una latencia negativa es imposible, así que esa
+columna cuantifica cuánto contamina el desfase. Contra el simulador, donde ambas marcas
+salen del mismo reloj, es 0 %. La prueba ahora informa ese porcentaje siempre, en vez de
+esconderlo dentro de una mediana.
+
+Los 87 s de la etapa 2 se descomponen y cuadran con el diseño: 30 s de watermark, más
+30 s porque **el watermark de Spark va un micro-batch por detrás** —el que se aplica en un
+lote es el máximo `ts_evento` visto en el anterior—, más hasta 30 s de espera al trigger.
+Total esperado 60–90 s. El motor no va atrasado. Para bajarlo, el parámetro con más efecto
+es `CRIPTO_INTERVALO_LOTE`, porque interviene en dos de los tres sumandos.
+
+**Para arreglar la prueba de Spark hubo que hacer el job testeable.** `agregar()` se
+separó en `preparar()` (watermark y deduplicación, que exigen un flujo) y
+`calcular_metricas()` (ventana y agregaciones, que funciona igual sobre un DataFrame
+estático). El `.agg()` no cambia, así que el esquema del estado tampoco y el checkpoint
+sigue siendo válido.
+
+La prueba ahora importa `calcular_metricas` y ejerce la aritmética que corre en
+producción: **7 casos, todos pasan**. Cubre el VWAP ponderado (comprobando explícitamente
+que *no* coincide con el promedio simple), el OHLC con las filas desordenadas a propósito,
+la volatilidad como rango relativo, la separación por símbolo, los límites de ventana, los
+tres valores de `origen_datos` incluido el mixto, y los 16 campos del contrato en la
+salida.
+
+**La etapa 3 queda pendiente y sin inventar.** Para medirla, Logstash tiene que sellar la
+hora de indexación en un campo propio (`ruby { code => "event.set('ts_indexado', ...)" }`).
+No se aplicó todavía porque reiniciar Logstash habría interrumpido la indexación durante
+la hora que se estaba midiendo para la conciliación.
+
+---
+
+### 2026-09-09 · La conciliación contra el mercado real, y por qué `DESVIADO` es la respuesta correcta
+
+Primera conciliación con la fuente F1 activa. La hora 01:00–02:00 UTC, con el productor
+real corriendo desde las 01:29 —o sea, **media hora de las dos**:
+
+| Símbolo | VWAP streaming | Cierre batch | Desviación | Cobertura | Veredicto |
+|---|---|---|---|---|---|
+| BTCUSDT | 78 840,86 | 78 891,50 | **−0,064 %** | 44,98 % | DESVIADO |
+| ETHUSDT | 2 496,86 | 2 497,80 | **−0,038 %** | 44,91 % | DESVIADO |
+| SOLUSDT | 103,74 | 103,79 | **−0,052 %** | 55,92 % | DESVIADO |
+
+**La desviación es de cuatro centésimas de punto porcentual**, diez veces por debajo del
+umbral de 0,5 %. El veredicto `DESVIADO` sale enteramente de la cobertura: 45 % contra un
+mínimo del 60 %, porque el flujo en vivo solo escuchó 31 de los 60 minutos.
+
+**Este resultado es el que valida el diseño de la métrica, no el que lo cuestiona.** La
+conciliación está diciendo dos cosas a la vez y las está separando bien: *el precio que
+calcula el streaming coincide con el del exchange* y *no escuché la hora entera, así que
+no te fíes del todo*. Un solo número no podría decir ambas. Es exactamente el motivo por
+el que el contrato sostiene que `cobertura_pct` importa más que `desviacion_pct`.
+
+La comprobación aritmética cuadra: 41 721 / 92 751 = 44,98 %, y
+(78 840,86 − 78 891,50) / 78 891,50 × 100 = −0,064 %.
+
+**El contraste queda registrado en la propia tabla**, que conserva la hora anterior con el
+simulador. Una sola consulta a `conciliacion` muestra las dos poblaciones:
+
+| Hora | Fuente | Desviación BTC | Cobertura |
+|---|---|---|---|
+| 00:00 | Simulador | −20,03 % | 8,08 % |
+| 01:00 | Exchange real | −0,064 % | 44,98 % |
+
+Tres órdenes de magnitud de diferencia en la desviación, con el mismo código a ambos
+lados. Es la mejor evidencia que tiene el proyecto de que la conciliación mide algo real,
+y conviene llevarla así a la exposición: **las dos filas juntas**, no solo la buena.
+
+---
+
+### 2026-09-09 · El índice que no existía por un guion, y la conciliación que medía el simulador
+
+Dos hallazgos encadenados. El primero explica por qué la conciliación devolvía cero; el
+segundo, por qué al arreglarlo los números seguían sin significar nada.
+
+**1. `cripto-nrt-metrica-*` contra `cripto-nrt_metrica-*`.** El nombre del índice sale del
+campo `tipo_fuente`, que el contrato define con **guion bajo** (`nrt_metrica`). En
+`config.py` estaba escrito con **guion medio**. Elasticsearch no devuelve error ante un
+patrón que no casa con ningún índice: devuelve `count: 0` con `0 shards`, que es
+exactamente lo que devolvería un índice real y vacío. La conciliación reportaba
+`SIN_DATOS` y no había forma de distinguirlo de "el streaming no ha escrito todavía".
+
+Corregido en `config.py`, `CONTRATO_DATOS.md` y `README.md`. **La lección no es el
+guion:** es que el nombre del índice se derive de un valor del contrato y aun así se
+escriba a mano en otro sitio. Cualquier nombre que se teclee dos veces acaba divergiendo.
+
+**2. La conciliación funcionaba, pero comparaba dos mercados distintos.** Corregido el
+nombre, el DAG 05 escribió sus tres filas. Estos fueron los números:
+
+| Símbolo | VWAP streaming | Cierre batch | Desviación | Cobertura | Veredicto |
+|---|---|---|---|---|---|
+| BTCUSDT | 62 998,12 | 78 774,65 | −20,03 % | 8,08 % | DESVIADO |
+| ETHUSDT | 3 399,99 | 2 496,28 | +36,20 % | 10,05 % | DESVIADO |
+| SOLUSDT | **145,00** | 103,78 | +39,72 % | 33,45 % | DESVIADO |
+
+El `145,00` clavado de SOL es la pista: es exactamente la constante
+`SIMBOLOS["SOLUSDT"]["precio_base"]` del simulador. El simulador genera precios como una
+caminata de ±0,2 % alrededor de tres constantes escritas a mano (63 000, 3 400, 145) que
+no tienen relación con el mercado. La conciliación estaba midiendo, con toda corrección,
+la distancia entre esas constantes y el precio real.
+
+**El mecanismo estaba bien; la comparación no.** Y la cobertura decía lo mismo por otra
+vía: el simulador produce unos 6 700 trades por hora contra los 82 550 reales de BTC.
+
+---
+
+### 2026-09-09 · Fuente F1: productor de WebSocket contra el exchange real
+
+La conclusión del hallazgo anterior es que **la conciliación solo mide algo si los dos
+flujos leen el mismo mercado**. Eso obliga a la fuente F1 del contrato, que estaba
+pendiente. Implementada.
+
+**Qué se añadió**
+
+| Archivo | Papel |
+|---|---|
+| `ingesta_streaming/cliente_websocket.py` | Conexión al exchange y traducción al contrato |
+| `ingesta_streaming/observabilidad.py` | Eventos `ops_control` del productor, con la biblioteca estándar |
+| `pruebas/prueba_websocket.py` | 40 comprobaciones de la traducción, sin red ni Kafka |
+
+`productor_kafka.py` pasa a elegir fuente por `CRIPTO_FUENTE_TRADES` (`websocket` por
+defecto, `simulador` para trabajar sin red y para las pruebas de carga y deduplicación).
+Las dos fuentes se consumen como generadores con la misma interfaz, así que el bucle de
+publicación no sabe cuál está usando.
+
+**La traducción está separada de la conexión, y eso es lo importante.** `traducir_trade()`
+es una función pura: recibe el payload del exchange y devuelve el evento del contrato. Se
+prueba sin socket, sin Kafka y sin la librería instalada — la importación de
+`websocket-client` está dentro de `abrir_flujo()` justamente para eso.
+
+**Los tres detalles del formato del exchange que rompen en silencio:**
+
+- **Precio y cantidad llegan como cadena**, no como número: el exchange lo hace para no
+  perder precisión al serializar. Sin convertirlos, Spark recibe texto donde su esquema
+  declara `double` y la columna sale **nula sin ningún error**.
+- **El símbolo va en minúsculas en el nombre del canal** (`btcusdt@trade`) y en mayúsculas
+  en el campo `simbolo`. En mayúsculas el socket conecta correctamente y no llega ni un
+  mensaje: no hay error, solo silencio.
+- **`ts_evento` sale de `T`** (hora del trade), no de `E` (hora del evento). Se parecen y
+  difieren en decenas de milisegundos, que es justo la magnitud que mide la prueba de
+  latencia.
+
+Cada uno tiene su comprobación en `prueba_websocket.py`, con el motivo escrito al lado.
+
+**Verificado contra el exchange real.** Conexión TCP+TLS desde la red de Docker, y seis
+trades traducidos: BTC 78 666,01, ETH 2 490,17 — precios del mercado, no constantes. Los
+`id_trade` llegan consecutivos (6666798256, 257, 258…), lo que confirma que son únicos y
+crecientes por símbolo, que es lo que la deduplicación de Spark da por supuesto. La
+latencia de ingesta (`ts_ingesta − ts_evento`) sale en **9 ms**.
+
+**La caída al simulador es ruidosa a propósito.** Si el exchange no responde, el productor
+cae a F2 (salvo `CRIPTO_RESPALDO_SIMULADOR=false`), avisa por consola y publica un evento
+`ops_control`. Pero lo que de verdad protege el análisis posterior no es el aviso: es que
+cada trade lleve su `origen`. Un aviso se pierde en un log; el campo viaja con el dato.
+
+**Limitación declarada.** Este flujo depende de que el exchange sea alcanzable el día de
+la demo. No hay forma de quitar esa dependencia sin volver a datos inventados. Por eso se
+conserva el simulador, y por eso el `origen` es obligatorio.
+
+---
+
+### 2026-09-09 · `origen_datos`: sin este campo, la conciliación no es auditable
+
+Tener dos fuentes crea un problema nuevo: **una vez agregada la ventana, ya no se sabe de
+dónde salieron sus trades.** El campo `origen` de la métrica vale `spark_streaming`
+— dice quién la calculó, no qué la alimentó. Sin distinguirlos, cualquiera podría
+conciliar ventanas del simulador contra velas reales y volver al mismo error, ahora sin
+la pista del `145,00`.
+
+Se añade `origen_datos` a la métrica, y el DAG 05 solo concilia
+`origen_datos = exchange_ws` (`CONCILIACION_ORIGEN_DATOS`).
+
+**Se agrega con `min` y `max`, no con `collect_set`.** Las agregaciones de colección no
+son fiables en agregaciones de streaming. Con solo dos valores posibles, comparar el
+mínimo con el máximo distingue exactamente los tres casos: `exchange_ws`, `simulador` o
+`exchange_ws+simulador` cuando la ventana cae en el minuto del cambio de fuente. Es una
+solución más pequeña y sin nada que pueda fallar en tiempo de ejecución.
+
+**Efecto secundario deseado:** las métricas generadas antes de este cambio no tienen el
+campo, y un filtro `term` las excluye por sí solo. No hay que borrar nada.
+
+**Dos cosas que hubo que arreglar para que el campo funcionara:**
+
+**La plantilla de índice no lo declaraba.** `elasticsearch/plantillas/cripto.json` solo
+declaraba nueve campos. Un campo nuevo se mapea dinámicamente como `text` con subcampo
+`.keyword`, y un filtro `term` sobre `text` **no encuentra nada y no da error**: es el
+mismo fallo silencioso que la plantilla explícita existe para evitar, reproducido dentro
+del propio archivo que debía evitarlo. Se declararon los 23 campos del contrato. Como el
+índice del día ya existía, se le aplicó el mapeo con `PUT _mapping` antes de que llegara
+el primer documento con el campo; un despliegue desde cero no necesita ese paso.
+
+**Queda un desajuste conocido en los índices de hoy, y se deja a propósito.** El índice
+`cripto-nrt_trade-2026.09.09` se creó *antes* de que la plantilla declarara `origen`, así
+que ahí ese campo quedó como `text` con subcampo `.keyword`. En los índices que se creen a
+partir de ahora será `keyword` a secas. Consecuencia práctica: una agregación sobre los
+trades de hoy necesita `origen.keyword`, y sobre los de mañana, `origen`.
+
+No se corrige porque las dos salidas son borrar el índice o reindexarlo, y el índice de
+hoy contiene la mezcla de las dos fuentes, que es precisamente la evidencia del cambio:
+
+| `origen` | Trades indexados |
+|---|---|
+| `simulador` | 33 159 |
+| `exchange_ws` | 20 658 |
+
+Con el índice del día siguiente el problema desaparece solo. Lo que sí conviene es no
+construir paneles de Kibana contra `origen.keyword`, porque dejarán de funcionar mañana.
+En las **métricas** no ocurre: ahí `origen_datos` se declaró con `PUT _mapping` antes de
+que llegara el primer documento que lo llevaba, así que es `keyword` desde el principio.
+
+**El checkpoint de Spark quedó incompatible.** Añadir `min(origen)` y `max(origen)`
+cambia el esquema del estado de la agregación, y Spark se niega a reanudar desde un
+checkpoint cuyo esquema no coincide. Hubo que apartarlo
+(`datos/checkpoints/metricas` → `metricas_simulador_20260909`). **Esto vale para
+cualquier cambio futuro en el `.agg()`**, no solo para este: tocar la lista de
+agregaciones obliga a descartar el estado acumulado. Es una restricción del motor, no un
+defecto, pero conviene saberla antes de una demo y no durante.
+
+---
+
+### 2026-09-08 · Primera corrida del circuito completo, y cinco defectos que solo aparecen ejecutando
+
+Con los dos caminos integrados y todo levantado —Kafka, Spark, Elasticsearch, Kibana,
+Logstash, Airflow y MySQL— el circuito se cerró. Los cinco problemas de abajo se
+descubrieron **uno detrás de otro**, cada uno tapando al siguiente, y ninguno era visible
+leyendo la configuración.
+
+#### 1. El códec `json_lines` no funciona con el input `file`
+
+**Síntoma.** Logstash arrancaba sin ningún error, detectaba el archivo, registraba en su
+`sincedb` que lo había leído entero —505 169 bytes— y en Elasticsearch no aparecía ni un
+documento.
+
+**Causa.** El input `file` ya trocea el archivo por saltos de línea y entrega cada línea
+**sin** el salto final. El códec `json_lines` vuelve a buscar un delimitador que ya no
+está, se queda la línea en el búfer esperándolo, y no emite nunca.
+
+**Solución.** `codec => "json"` para archivos. `json_lines` solo sirve donde el flujo sí
+trae los saltos, como el input `tcp`.
+
+**Por qué es el peor tipo de fallo:** todos los indicadores dicen que funciona. El archivo
+se detecta, el `sincedb` avanza hasta el final, no hay excepciones. Solo falta el
+resultado.
+
+#### 2. El `sincedb` sobrevive a un `restart`
+
+**Síntoma.** Tras corregir el códec, seguía sin indexar nada.
+
+**Causa.** El `sincedb` ya marcaba los archivos como leídos por completo. Borrarlo dentro
+del contenedor y hacer `docker compose restart` **no sirve**: Logstash vuelca el `sincedb`
+a disco al recibir la señal de parada, así que el apagado ordenado lo restaura.
+
+**Solución.** `docker compose up -d --force-recreate logstash`, que crea un contenedor
+nuevo con la capa de escritura vacía.
+
+#### 3. Un índice por cada día de la serie: más de 300 índices
+
+**Síntoma.** Al empezar a indexar el batch aparecieron cientos de índices
+`cripto-batch_ohlcv-AAAA.MM.DD`, con uno a tres documentos cada uno.
+
+**Causa.** El sufijo `%{+YYYY.MM.dd}` se calcula sobre `@timestamp`, y para una vela
+`@timestamp` es **su** fecha, de hasta un año atrás, no la de ingesta. La convención
+heredada del Taller 2 sirve para un flujo continuo, donde todo cae en el día actual; para
+una carga histórica de 364 días es una fragmentación absurda.
+
+**Solución.** Los tipos batch van a un índice único sin fecha; los NRT y de operación
+conservan el índice diario, donde sí tiene sentido. La dimensión temporal vive en
+`@timestamp`, que es lo que usa Kibana: la fecha en el nombre del índice es una
+conveniencia de particionado físico, no un requisito del modelo.
+
+#### 4. El batch era idempotente en MySQL pero no en Elasticsearch
+
+**Síntoma.** Detectado al revisar el punto anterior, antes de que causara daño.
+
+**Causa.** Sin `document_id`, Elasticsearch asigna un identificador aleatorio a cada
+documento. Cada corrida del DAG 04 añadía otros 1092 documentos. A la tercera corrida los
+paneles habrían mostrado el triple de volumen, **sin ningún error**.
+
+**Solución.** `document_id` derivado de la clave natural, `id_activo_fecha`, la misma que
+usa el `ON DUPLICATE KEY UPDATE` de MySQL. La idempotencia tiene que valer en los dos
+almacenes, no solo en el relacional.
+
+#### 5. `kafka-python` 2.0.2 no funciona en Python 3.12
+
+**Síntoma.** El contenedor del productor moría al arrancar con
+`ModuleNotFoundError: No module named 'kafka.vendor.six.moves'`.
+
+**Causa.** La librería incluye una copia propia de `six` que usa un mecanismo de
+importación que Python 3.12 eliminó.
+
+**Solución.** Imagen base `python:3.11-slim`. Descartadas `kafka-python-ng`, un fork menos
+conocido, y `confluent-kafka`, que obligaría a reescribir el productor.
+
+#### Un falso positivo, para no repetirlo
+
+Antes de encontrar el problema real dimos por roto Logstash porque el índice
+`cripto-nrt_metrica-*` no aparecía. **No estaba roto: consultamos demasiado pronto.** Una
+ventana de un minuto con watermark de 30 segundos y `outputMode("append")` no emite nada
+hasta que el watermark garantiza que la ventana ya no puede recibir eventos tardíos: unos
+dos minutos y medio desde el primer trade. Conviene tenerlo presente en la demostración,
+porque el panel tarda ese tiempo en moverse por primera vez y parece que no funciona.
+
+### 2026-09-08 · Integración de los dos caminos: seis defectos que impedían cerrar el circuito
+
+Al fusionar `nrt/estefano` en `batch/manuel` y revisar la rama antes de probarla. La rama
+estaba construida sobre la nuestra, así que la fusión fue limpia; el problema no era de
+control de versiones sino de **contrato**.
+
+**El defecto grave: el job de Spark emitía 5 de los 10 campos del contrato.** Publicaba
+`inicio_ventana`, `fin_ventana`, `vwap`, `volatilidad_real` y `volumen_total`. Faltaban
+`volumen_usdt`, `n_trades` y `tipo_fuente`.
+
+Sin `volumen_usdt` no se puede agregar las 60 ventanas de un minuto a una hora ponderando
+por volumen. Sin `n_trades` no hay `cobertura_pct`. **La conciliación —la pieza que
+justifica tener dos flujos— habría devuelto cero**, y lo habría hecho en silencio: cero
+horas conciliadas es un resultado legítimo cuando el flujo NRT está callado, así que nada
+habría delatado que el problema era un campo ausente.
+
+Los otros cinco:
+
+| Defecto | Consecuencia |
+|---|---|
+| `spark-streaming` sin `command` en el compose | El contenedor arrancaba, parecía sano y no ejecutaba nada |
+| `dropDuplicates(["id_trade"])` con watermark | Sobre una columna que no es la de tiempo de evento, el watermark **no limpia el estado**: Spark guarda todos los ids vistos para siempre. En la prueba de carga a 2000 ev/s el job se queda sin memoria. Corregido a `dropDuplicatesWithinWatermark(["simbolo","id_trade"])` |
+| Checkpoint en `/opt/spark/work-dir/checkpoints` | Ahí se monta el **código**. El volumen previsto para checkpoints quedaba sin usar, y recrear el contenedor perdería el estado, con lo que la prueba de recuperación ante fallo no demostraría nada |
+| Logstash con 1 input de 5 | Faltaba el `file` del NDJSON batch. **El volumen ya estaba montado**: el camino batch llevaba dos días escribiendo 1092 registros por corrida y nadie los leía |
+| `id_trade` aleatorio y como texto | Nunca se repetía, así que la deduplicación era **imposible de probar**. La prueba P4 consiste precisamente en reenviar trades ya procesados |
+
+**Lo que hace interesante este bloque para la exposición** no es la lista de defectos, sino
+que ninguno se detecta leyendo el código de un solo lado. Cada mitad era razonable por
+separado; lo que fallaba era la costura. Es el argumento a favor de haber escrito el
+contrato de datos primero: sin él no habría habido contra qué comparar, y los seis
+defectos habrían aparecido el día de la demostración.
+
+**Lección concreta:** un contrato escrito no basta si nada lo verifica. Convendría una
+prueba que valide el mensaje del job contra el JSON Schema, igual que
+`prueba_logica_batch.py` valida las reglas de calidad.
 
 ### 2026-09-06 · El DAG 05 tumbaba toda la cadena batch si Elasticsearch no estaba
 
@@ -334,206 +852,11 @@ nada sobre la red del aula el día de la exposición.
 
 | Bloqueo | Afecta a | Se resuelve |
 |---|---|---|
-| Contrato de datos sin revisar por Estéfano | Ambos caminos | Sesión del Día 1 |
-| Código del Taller 2 aún no está en el repo | `docker-compose.yml`, Logstash | Estéfano lo comparte |
-| El DAG 05 necesita métricas NRT en Elasticsearch | `dag_05_conciliacion` | Día 4, cuando el flujo NRT escriba |
-
-# Avance del Proyecto Final: Streaming y Procesamiento
-
-**Fecha:** 7 de Septiembre de 2026
-
-## 1. Ingesta NRT Completada
-
-**Estado:** ✅ **COMPLETADO**
-
-Se ha implementado exitosamente la ingesta de datos en tiempo real desde el simulador de `ingesta_streaming` hacia Kafka.
-
-### Logstash Configurado
-
-- **Archivo:** `logstash/pipeline_cripto/logstash.conf`
-- **Configuración:**
-  - Lee el topic `trades.crudo`.
-  - Parsea mensajes JSON.
-  - Escribe en índices dinámicos `cripto-nrt-trade-...`.
-- **Verificación:** Los logs muestran la recepción exitosa de eventos y el mapeo dinámico funciona correctamente.
-
-### Productor Kafka Operativo
-
-- **Archivo:** `ingesta_streaming/productor_kafka.py`
-- **Funcionalidad:** Envía eventos simulados con `precio` y `volumen_usdt` al topic `trades.crudo`.
-- **Salida:** Muestra el envío de mensajes en tiempo real.
-
-### Verificación en Kibana
-
-Se accedió a Kibana y se verificó en la consola Dev Tools que Logstash está escribiendo correctamente en el índice `cripto-nrt-trade-*`. Los documentos se muestran sin errores de mapeo, validando la configuración del pipeline.
-
-## 2. Estructura de Procesamiento Spark Lista
-
-**Estado:** ✅ **COMPLETADO**
-
-Se ha creado la base del job de Spark para el procesamiento de ventanas móviles, ubicado en `procesamiento_streaming/job_metricas_ventana.py`.
-
-### Componentes Implementados
-
-- **SparkSession:** Configurada con las librerías de Kafka necesarias.
-- **Esquema Definido:** Se implementó el esquema `esquema_trade` basado en el contrato de datos.
-- **Lectura de Stream:** Configurado para leer del topic `trades.crudo`.
-- **Agrupación por Ventana:** Implementada la lógica de windowing con ventanas de 1 minuto.
-- **Salida:** Configurado para imprimir resultados en consola para propósitos de depuración.
-
-## 3. Próximos Pasos
-
-### Inmediatos
-
-1. **Ejecutar el Flujo NRT:**
-   ```bash
-   docker compose up -d logstash
-   python ingesta_streaming/productor_kafka.py
-   ```
-   Verificar datos en Kibana.
-
-2. **Implementar Agregaciones en Spark:**
-   ```bash
-   docker compose exec spark-stream bash
-   python procesamiento_streaming/job_metricas_ventana.py
-   ```
-   Verificar agregaciones en consola.
-
-### A Mediano Plazo
-
-1. **Guardar en Elasticsearch:** Modificar el job de Spark para escribir las métricas agregadas en un índice Elasticsearch.
-2. **Integración con DAGs:** Configurar el DAG `dag_05_conciliacion` para consumir estas métricas.
-3. **Validación de Latencia:** Medir el tiempo real de procesamiento e ingesta.
-
-## 4. Resumen de Archivos Creados/Modificados
-
-**Ingesta Streaming:**
-- `ingesta_streaming/productor_kafka.py` - Productor Kafka
-
-**Logstash:**
-- `logstash/pipeline_cripto/logstash.conf` - Configuración de Logstash
-
-**Procesamiento Streaming:**
-- `procesamiento_streaming/job_metricas_ventana.py` - Job Spark para métricas NRT
-
-**Docker Compose:**
-- Modificado `docker-compose.yml` para incluir servicio de Logstash
-
----
-
-**Ingesta NRT finalizada y verificada visualmente.** Los datos simulados viajan desde Kafka hacia Elasticsearch mediante Logstash (red cripto-red) y se visualizan en Kibana sin errores de mapeo dinámico.
-
-**Estructura base del job de Spark lista** para implementar la lógica de agregación de ventanas.
-
----
-
-## Estado del Pipeline NRT
-
-- **Ingesta Streaming Completada:** Logstash lee fluidamente desde Kafka (`trades.crudo`) y escribe en Elasticsearch bajo el índice `cripto-*`. El mapeo funciona y los datos se visualizan en vivo en Kibana (Discover).
-
-- **Conexión Spark-Kafka Validada:** El job de Spark se conecta a Kafka dentro de la red `cripto-red` usando `docker compose run --rm`. Spark lee el stream, aplica el esquema estricto y ya procesa agregaciones sin arrojar nulos (el problema del campo de volumen fue identificado y mapeado a `cantidad`).
-
-- **Alertas Kibana Operativas:** Las reglas tipo Elasticsearch query están configuradas y probadas. Se solucionaron los problemas de cifrado (agregando la variable de entorno XPACK) y los desfases de sincronización de tiempo ampliando la ventana de evaluación de la alerta.
-
-- **Foco para la Sesión:** La infraestructura está resuelta. El tiempo con Manuel se dedicará 100% a refinar la lógica de negocio en `job_metricas_ventana.py` (cálculos matemáticos, watermarking avanzado) y decidir si el output de Spark se escribirá de regreso a Kafka o directo a Elasticsearch.
-
----
-
-## Arquitectura NRT: ¿Para qué sirve cada componente?
-
-1. **Kafka + Zookeeper (`kafka`, `zookeeper`, `kafka-init`, `kafka-ui`):**
-   - **Rol:** Bus de mensajería desacoplado y de alto rendimiento (patrón Pub/Sub).
-   - **Detalle:** Actúa como el amortiguador (*buffer*) central del streaming. El topic `trades.crudo` recibe eventos continuos particionados por clave de activo (`simbolo`: BTC, ETH, SOL). `kafka-init` aprovisiona los topics con sus particiones y retención automáticamente, y `kafka-ui` (en `http://localhost:8093`) permite auditar topics, particiones y offsets en tiempo real.
-
-2. **Productor de Trades (`ingesta_streaming/productor_kafka.py` + `simulador_trades.py`):**
-   - **Rol:** Emisor/Generador de eventos en tiempo real.
-   - **Detalle:** Simula la llegada ininterrumpida de transacciones del mercado cripto (precio, cantidad, timestamp en UTC, tipo de fuente). Se conecta al listener externo de Kafka (`localhost:9095`) y publica un flujo constante de datos hacia el topic `trades.crudo`.
-
-3. **Logstash (`logstash_cripto`):**
-   - **Rol:** Pipeline de ingesta directa hacia el motor de búsqueda.
-   - **Detalle:** Se conecta al listener interno (`kafka:29092`), consume los eventos crudos, realiza la normalización temporal asignando `ts_evento` a `@timestamp` y los indexa inmediatamente en Elasticsearch bajo el patrón `cripto-nrt_trade-YYYY.MM.dd`.
-
-4. **Elasticsearch (`elasticsearch_cripto`):**
-   - **Rol:** Repositorio analítico de series temporales y búsqueda distribuida.
-   - **Detalle:** Almacena los eventos indexados con tipos de datos estrictos, permitiendo búsquedas de baja latencia, agregaciones temporales y consultas por rango utilizadas por Kibana y por la futura conciliación con el pipeline Batch.
-
-5. **Kibana (`kibana_cripto`):**
-   - **Rol:** Visualización y motor de alertas NRT.
-   - **Detalle:** Permite explorar los eventos en vivo mediante **Discover** (puerto `5602`) y ejecuta reglas de alertas periódicas (Elasticsearch Query rules) que evalúan ventanas temporales de datos para detectar anomalías (ej. picos de volumen o saltos de precio) reportando advertencias en sus logs.
-
-6. **Spark Structured Streaming (`spark-streaming` / `job_metricas_ventana.py`):**
-   - **Rol:** Motor de procesamiento analítico en micro-batches sobre ventanas de tiempo.
-   - **Detalle:** Consume `trades.crudo` desde Kafka validando con `esquemas_spark.py`. Implementa deduplicación por `id_trade`, marcas de agua (*watermarking* de 30s) para manejar eventos tardíos, y agrupa en ventanas *tumbling* de 1 minuto para calcular métricas de negocio exactas (`vwap`, `volatilidad_real`, `volumen_total`). Finalmente, escribe el resultado en JSON hacia el topic `metricas.1min` de Kafka.
-
-7. **Configurador de Alertas Kibana (`reglas_alertas.py`):**
-   - **Rol:** Automatización de la configuración operativa.
-   - **Detalle:** Un script en Python que interactúa vía API con Kibana para crear/provisionar las reglas de alertas (ej. Caída de precio < 150 en SOLUSDT), sin requerir intervención manual en la interfaz gráfica.
-
----
-
-## Secuencia de Ejecución del Pipeline NRT
-
-Sigue este orden paso a paso para levantar, inyectar datos y verificar cada pieza:
-
-### Paso 1: Levantar la infraestructura base de streaming
-Asegura que los servicios de Kafka, Elasticsearch, Logstash y Kibana estén arriba y saludables:
-```bash
-# Levanta la infraestructura de streaming
-docker compose up -d zookeeper kafka kafka-init elasticsearch kibana logstash
-```
-> **Verificación:** Ejecuta `docker compose ps`. Puedes abrir Kibana en `http://localhost:5602` y Kafka UI en `http://localhost:8093`.
-
-### Paso 2: Configurar las alertas en Kibana
-Crea las reglas de negocio ejecutando el script (hacia la API de Kibana):
-```bash
-python procesamiento_streaming/reglas_alertas.py
-```
-
-### Paso 3: Iniciar la generación y publicación de trades
-Desde tu terminal de trabajo o entorno conda:
-```bash
-# Inicia la emisión continua de trades hacia Kafka
-& C:/Users/estef/anaconda3/envs/Coding/python.exe c:/Users/estef/Desktop/Productivo/Clases/Maestria/7.IngenieriaDatos/ProyectoFinal/pipeline-cripto-batch-nrt/ingesta_streaming/productor_kafka.py
-```
-> **Comportamiento esperado:** Verás en la consola mensajes continuos del tipo:
-> `-> Enviado a Kafka: SOLUSDT | Precio: 144.83 | Importe: 383.67`
-
-### Paso 4: Validar la ingesta en Logstash y visualización
-1. **Comprobar Logstash:**
-   ```bash
-   docker logs -f logstash_cripto
-   ```
-2. **Visualizar en Kibana:**
-   - Abre `http://localhost:5602/app/discover`.
-   - Selecciona el index pattern `cripto-*`. Verás los documentos entrando en vivo cada segundo.
-
-### Paso 5: Ejecutar el procesamiento de ventanas con Spark
-Para procesar las métricas analíticas (VWAP, Volatilidad) en streaming y enviarlas a Kafka:
-```bash
-# Ejecutar el job de Spark Streaming con spark-submit dentro del contenedor:
-docker compose run --rm spark-streaming /opt/spark/bin/spark-submit /opt/spark/work-dir/job_metricas_ventana.py
-```
-
-### Paso 6: Validar la salida de Spark en el topic de destino (`metricas.1min`)
-Para comprobar que Spark está calculando las ventanas y publicando correctamente de vuelta a Kafka, usamos un consumidor desde consola en el contenedor de Kafka:
-```bash
-docker compose exec kafka /bin/kafka-console-consumer --bootstrap-server kafka:29092 --topic metricas.1min --from-beginning
-```
-> **Comportamiento esperado:** Verás el JSON resultante con la ventana de tiempo (`inicio_ventana`, `fin_ventana`), `simbolo`, `vwap`, `volatilidad_real` y `volumen_total`.
-
-### Paso 7: Ejecutar la Suite de Pruebas NRT
-Las pruebas automatizadas validan la robustez, capacidad y latencia real del pipeline de streaming:
-
-1. **Validación de Lógica (Unit Test Spark):** Valida matemáticamente el VWAP y el filtro de duplicados.
-   ```bash
-   python pruebas/prueba_logica_streaming.py
-   ```
-2. **Prueba de Carga (Throughput Kafka):** Estresa el bus de eventos inyectando tráfico a 500, 1000 y 2000 eventos por segundo. (Asegúrate de que Kafka esté corriendo).
-   ```bash
-   python pruebas/prueba_carga.py
-   ```
-3. **Prueba de Latencia End-to-End:** Compara el `ts_evento` contra el tiempo de indexación real en Elasticsearch (`@timestamp`) y calcula los percentiles p50, p95 y p99.
-   ```bash
-   python pruebas/prueba_latencia.py
-   ```
-
+| ~~Contrato de datos sin revisar por Estéfano~~ | ~~Ambos caminos~~ | **Resuelto.** Los dos caminos lo aplican. Queda redactar la sección 10, que sigue listando como abiertas cinco decisiones ya implementadas |
+| ~~Código del Taller 2 aún no está en el repo~~ | ~~`docker-compose.yml`, Logstash~~ | **Resuelto.** Compose unificado con los servicios ELK dentro |
+| ~~El DAG 05 necesita métricas NRT en Elasticsearch~~ | ~~`dag_05_conciliacion`~~ | **Resuelto el 9 de septiembre.** Concilia contra métricas reales |
+| ~~Los índices se pierden con un `docker compose down`~~ | ~~Toda la evidencia~~ | **Resuelto el 9 de septiembre.** Volumen `elasticsearch-datos`, datos migrados |
+| La demo depende de que el exchange sea alcanzable | Fuente F1, conciliación | No se elimina: se declara. Si el exchange no responde, el productor cae al simulador con `origen=simulador` y la conciliación excluye esas ventanas en vez de dar un número falso |
+| Nada escribe en `alertas.precio` | `nrt_alerta`, paneles de Kibana | Pendiente de Estéfano: decidir entre generarlas en Spark (lo que dice el contrato) o con Kibana Alerting. Hoy hay reglas de Kibana disparando, que **no es lo que el contrato describe** |
+| El tablero de Kibana está vacío | Entregable de visualización | `kibana/tableros.ndjson` exporta un tablero sin paneles. Hay que construirlo y volver a exportar |
+| Dos pruebas escritas y nunca ejecutadas | Evidencia de resultados (10 % de la rúbrica) | `prueba_latencia` y `prueba_carga`, con el entorno arriba. `prueba_logica_streaming` ya corrió: 7 de 7 |

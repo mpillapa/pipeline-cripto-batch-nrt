@@ -23,11 +23,56 @@
                 "importe_usdt": {
                     "type": "double"
                 },
+                "volatilidad_pct": {
+                    "type": "double"
+                },
+                "precio_apertura": {
+                    "type": "double"
+                },
+                "precio_maximo": {
+                    "type": "double"
+                },
+                "precio_minimo": {
+                    "type": "double"
+                },
+                "precio_cierre": {
+                    "type": "double"
+                },
+                "n_trades": {
+                    "type": "long"
+                },
+                "id_trade": {
+                    "type": "long"
+                },
                 "simbolo": {
                     "type": "keyword"
                 },
                 "tipo_fuente": {
                     "type": "keyword"
+                },
+                "origen": {
+                    "type": "keyword"
+                },
+                "origen_datos": {
+                    "type": "keyword"
+                },
+                "comprador_es_maker": {
+                    "type": "boolean"
+                },
+                "ts_evento": {
+                    "type": "date"
+                },
+                "ts_ingesta": {
+                    "type": "date"
+                },
+                "ts_procesado": {
+                    "type": "date"
+                },
+                "ventana_inicio": {
+                    "type": "date"
+                },
+                "ventana_fin": {
+                    "type": "date"
                 },
                 "@timestamp": {
                     "type": "date"

@@ -54,8 +54,12 @@ env/
 # ---------------------------------------------------------------------------
 # Elasticsearch y Kibana
 # ---------------------------------------------------------------------------
-# Datos de los indices. Los tableros SI se versionan, exportados como NDJSON
-# en kibana/, porque son configuracion y no datos.
+# Los indices viven en el volumen de Docker `elasticsearch-datos`, no en el
+# arbol del proyecto, asi que no hay nada que ignorar aqui. La regla se deja
+# por si alguien vuelca un indice a mano para inspeccionarlo.
+#
+# Los tableros SI se versionan, exportados como NDJSON en kibana/, porque son
+# configuracion y no datos.
 elasticsearch/datos/
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,21 @@ class FlujoNrtNoDisponible(RuntimeError):
 # ---------------------------------------------------------------------------
 # LADO NEAR REAL-TIME
 # ---------------------------------------------------------------------------
+def _filtro_origen():
+    """Filtro que deja fuera las ventanas que no vienen del mercado real.
+
+    Devuelve una lista para poder concatenarla al `filter` sin condicionales en
+    medio de la consulta.
+
+    Las metricas anteriores a la fuente WebSocket no tienen el campo
+    `origen_datos`, asi que este term las excluye tambien. Es lo correcto: son
+    ventanas del simulador y no son comparables con la vela del exchange.
+    """
+    if not config.CONCILIACION_ORIGEN_DATOS:
+        return []
+    return [{"term": {"origen_datos": config.CONCILIACION_ORIGEN_DATOS}}]
+
+
 def construir_consulta(simbolo, desde, hasta):
     """Arma la agregacion que Elasticsearch tiene que resolver.
 
@@ -90,7 +105,7 @@ def construir_consulta(simbolo, desde, hasta):
                     # silencioso que la plantilla explicita evita.
                     {"term": {"simbolo": simbolo}},
                     {"range": {"@timestamp": {"gte": desde, "lt": hasta}}},
-                ]
+                ] + _filtro_origen()
             }
         },
         "aggs": {

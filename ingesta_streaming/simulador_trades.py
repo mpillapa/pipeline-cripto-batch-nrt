@@ -11,6 +11,38 @@ SIMBOLOS = {
     "SOLUSDT": {"precio_base": 145.0, "vol_rango": (1.0, 15.0)}
 }
 
+# Contador de id_trade POR SIMBOLO.
+#
+# Antes era random.randint(), y eso tenia dos problemas. El contrato lo define
+# como entero y salia como texto. Y sobre todo: al ser aleatorio no se repetia
+# nunca, asi que la deduplicacion del job de Spark no se podia probar. La
+# prueba P4 consiste precisamente en reenviar 1000 trades ya procesados y
+# comprobar que las metricas no cambian; con ids aleatorios eso es imposible.
+#
+# Con un contador, reenviar es tan facil como reiniciar el contador.
+_CONTADOR = {simbolo: 0 for simbolo in SIMBOLOS}
+
+
+def siguiente_id_trade(simbolo):
+    """Devuelve un id_trade unico y creciente dentro del simbolo.
+
+    El id_trade es unico POR SIMBOLO en el exchange, no globalmente, y el job de
+    Spark deduplica por (simbolo, id_trade). Un contador por simbolo reproduce
+    esa semantica.
+    """
+    _CONTADOR[simbolo] += 1
+    return _CONTADOR[simbolo]
+
+
+def reiniciar_contadores(desde=0):
+    """Vuelve a empezar la numeracion. Sirve para la prueba de deduplicacion.
+
+    Reiniciando y volviendo a publicar se generan trades con ids ya vistos, que
+    es exactamente lo que el job debe descartar.
+    """
+    for simbolo in _CONTADOR:
+        _CONTADOR[simbolo] = desde
+
 def generar_trade():
     """Genera un evento de trade simulado cumpliendo el contrato de datos."""
     simbolo = random.choice(list(SIMBOLOS.keys()))
@@ -33,7 +65,8 @@ def generar_trade():
         "id_evento": str(uuid.uuid4()),
         "tipo_fuente": "nrt_trade",
         "simbolo": simbolo,
-        "id_trade": str(random.randint(100000000, 999999999)),
+        # Entero, no cadena: lo exige el contrato y es la clave de dedup.
+        "id_trade": siguiente_id_trade(simbolo),
         "precio": precio,
         "cantidad": cantidad,
         "importe_usdt": importe_usdt,

@@ -127,11 +127,26 @@ OBSERVABILIDAD_TIEMPO_LIMITE = 2  # segundos
 # ELASTICSEARCH  (lo consulta el DAG 05 para la conciliacion)
 # ---------------------------------------------------------------------------
 ELASTICSEARCH_URL = os.environ.get("CRIPTO_ELASTICSEARCH", "http://elasticsearch:9200")
-INDICE_METRICAS_NRT = "cripto-nrt-metrica-*"
+INDICE_METRICAS_NRT = "cripto-nrt_metrica-*"
 
 # Cortes del veredicto de conciliacion.
 CONCILIACION_DESVIACION_ACEPTABLE = 0.5   # % de diferencia entre vwap y cierre
 CONCILIACION_COBERTURA_MINIMA = 60.0      # % de trades vistos por el streaming
+
+# Solo se concilian las ventanas alimentadas por ESTE origen de trades.
+#
+# POR QUE EXISTE ESTE FILTRO. La conciliacion compara el VWAP del streaming
+# contra el cierre de la vela real del exchange. Eso solo mide algo si ambos
+# lados leen el mismo mercado. Con el simulador (que genera precios a partir de
+# constantes escritas a mano) la comparacion mide la distancia entre esas
+# constantes y el mercado: medido el 9/9/2026, -20 %, +36 % y +40 % de
+# desviacion con cobertura del 8 %, 10 % y 33 %. Ninguno de esos numeros dice
+# nada sobre la exactitud del pipeline.
+#
+# El campo lo publica el job de Spark agregando el `origen` de los trades de
+# cada ventana. Poner None desactiva el filtro y concilia todo, incluidas las
+# ventanas mixtas; util solo para depurar.
+CONCILIACION_ORIGEN_DATOS = os.environ.get("CRIPTO_CONCILIACION_ORIGEN", "exchange_ws") or None
 
 # ---------------------------------------------------------------------------
 # CONFIGURACION COMUN DE LOS DAGS

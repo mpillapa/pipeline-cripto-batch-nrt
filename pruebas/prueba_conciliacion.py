@@ -293,6 +293,49 @@ comprobar(
 )
 
 
+titulo("9. Filtro de origen: que la comparacion sea comparable")
+
+consulta = conciliacion.construir_consulta("BTCUSDT", "2026-09-10T00:00:00Z", "2026-09-10T01:00:00Z")
+filtros = consulta["query"]["bool"]["filter"]
+terminos = {list(f["term"])[0]: list(f["term"].values())[0] for f in filtros if "term" in f}
+
+comprobar(
+    "la consulta filtra por origen_datos",
+    terminos.get("origen_datos") == "exchange_ws",
+    str(terminos),
+)
+comprobar(
+    "se filtra por term y no por match",
+    all("match" not in f for f in filtros),
+    "origen_datos es keyword en la plantilla; un match sobre keyword exige "
+    "coincidencia exacta y funciona por casualidad, no por diseno",
+)
+
+original = config.CONCILIACION_ORIGEN_DATOS
+try:
+    config.CONCILIACION_ORIGEN_DATOS = None
+    sin_filtro = conciliacion.construir_consulta("BTCUSDT", "a", "b")["query"]["bool"]["filter"]
+    comprobar(
+        "con el filtro desactivado la consulta no lo incluye",
+        not any("origen_datos" in f.get("term", {}) for f in sin_filtro),
+        "poner el parametro a None debe concilar todo, incluido el simulador",
+    )
+    comprobar(
+        "desactivar el filtro no rompe el resto de la consulta",
+        len(sin_filtro) == 2,
+        str(sin_filtro),
+    )
+finally:
+    config.CONCILIACION_ORIGEN_DATOS = original
+
+comprobar(
+    "una metrica sin el campo origen_datos queda fuera",
+    conciliacion.construir_consulta("BTCUSDT", "a", "b")["query"]["bool"]["filter"] != sin_filtro,
+    "las ventanas generadas antes de la fuente WebSocket no tienen el campo, y "
+    "un term las excluye: es lo que se quiere, no un efecto colateral",
+)
+
+
 # ---------------------------------------------------------------------------
 print()
 print("=" * 70)

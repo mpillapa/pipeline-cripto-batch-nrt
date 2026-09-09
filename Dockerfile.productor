@@ -1,0 +1,29 @@
+# Imagen del productor de trades.
+#
+# Igual criterio que Dockerfile.airflow: la dependencia se instala UNA VEZ al
+# construir, no en cada arranque. Instalarla en el `command` obligaria a tener
+# internet cada vez que se levanta el entorno, y la regla del proyecto es que
+# el pipeline funcione sin red.
+#
+# PYTHON 3.11 Y NO 3.12. kafka-python 2.0.2 falla al importarse en 3.12 con
+# `ModuleNotFoundError: No module named 'kafka.vendor.six.moves'`: la libreria
+# incluye una copia propia de `six` que usa un mecanismo de importacion que
+# Python 3.12 elimino. Comprobado ejecutandolo.
+#
+# Alternativas descartadas: kafka-python-ng (fork de la comunidad, menos
+# conocido) y confluent-kafka (obligaria a reescribir el productor). Fijar la
+# version de Python es el cambio mas pequeno.
+FROM python:3.11-slim
+
+# websocket-client y no `websockets`: el cliente real es un generador sincrono
+# que hace recv() bloqueante, y `websockets` obligaria a reescribir el productor
+# en asyncio para no ganar nada aqui. websocket-client ademas responde solo a los
+# frames PING del exchange, que llegan cada pocos minutos y cuya falta de
+# respuesta hace que el otro extremo cierre la conexion.
+RUN pip install --no-cache-dir kafka-python==2.0.2 websocket-client==1.8.0
+
+WORKDIR /app
+
+# El codigo se monta como volumen desde el compose: editar el simulador no
+# obliga a reconstruir la imagen.
+CMD ["python", "-u", "productor_kafka.py"]
