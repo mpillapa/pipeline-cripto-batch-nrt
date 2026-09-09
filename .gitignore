@@ -63,6 +63,14 @@ env/
 elasticsearch/datos/
 
 # ---------------------------------------------------------------------------
+# Diagramas
+# ---------------------------------------------------------------------------
+# `archify visual-check` deja capturas y un recibo para revisar el render. Son
+# artefactos de diagnostico, no entregables: el diagrama que se versiona son
+# docs/arquitectura.architecture.json (la fuente) y docs/arquitectura.html.
+docs/*.visual-check.*
+
+# ---------------------------------------------------------------------------
 # Sistema operativo y editores
 # ---------------------------------------------------------------------------
 .DS_Store

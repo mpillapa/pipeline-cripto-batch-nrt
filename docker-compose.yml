@@ -329,9 +329,42 @@ services:
       - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=EstaEsUnaLlaveSuperSecretaDeAlMenos32Caracteres
     ports:
       - "5602:5601"
+    healthcheck:
+      # `_export` da 200 solo cuando los saved objects estan listos. El endpoint
+      # /api/status responde antes de eso, y una importacion lanzada entonces
+      # falla con "Kibana server is not ready yet".
+      test: ["CMD-SHELL", "curl -sf -X POST localhost:5601/api/saved_objects/_export -H 'kbn-xsrf: true' -H 'Content-Type: application/json' -d '{\"type\":\"index-pattern\"}' -o /dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
     depends_on:
       elasticsearch:
         condition: service_healthy
+    networks:
+      - cripto-red
+
+  # Importa el tablero al arrancar y termina. Mismo patron que elasticsearch-init.
+  #
+  # Sin esto, `kibana/tableros.ndjson` seria un archivo que hay que acordarse de
+  # importar a mano desde la interfaz: el entregable de visualizacion estaria en
+  # el repositorio y no en la demo. `--overwrite` lo hace repetible.
+  kibana-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      kibana:
+        condition: service_healthy
+    volumes:
+      - ./kibana:/tableros:ro
+    command:
+      - sh
+      - -c
+      - |
+        echo "Importando tableros de Kibana"
+        curl -sS -X POST "http://kibana:5601/api/saved_objects/_import?overwrite=true" \
+          -H "kbn-xsrf: true" \
+          -F file=@/tableros/tableros.ndjson
+        echo
     networks:
       - cripto-red
 
@@ -420,6 +453,11 @@ services:
       CRIPTO_FLUSH_CADA: ${CRIPTO_FLUSH_CADA:-50}
     volumes:
       - ./ingesta_streaming:/app
+      # `prueba_carga.py` necesita kafka-python y el simulador, que estan aqui y
+      # no en el interprete de Windows. Mismo criterio que el montaje de
+      # `pruebas/` en spark-streaming: la prueba corre donde estan sus
+      # dependencias, no donde resulta comodo lanzarla.
+      - ./pruebas:/pruebas:ro
     depends_on:
       kafka:
         condition: service_healthy
@@ -447,11 +485,37 @@ services:
     environment:
       CRIPTO_KAFKA: kafka:29092
       CRIPTO_CHECKPOINT: /opt/spark/checkpoints/metricas
+      # Umbral de la alerta de variacion de precio, en porcentaje sobre la
+      # volatilidad de la ventana. El contrato fija la FORMA del mensaje y deja
+      # el corte a la configuracion, que es esto.
+      #
+      # 0,25 esta calibrado contra lo observado en el mercado real: la
+      # volatilidad por minuto de BTC/ETH/SOL tiene mediana 0,13 % y p90 0,30 %,
+      # asi que dispara en los minutos movidos y calla en los tranquilos. El
+      # 0,50 % que trae el codigo por defecto casi nunca saltaria con este
+      # mercado, y una alerta que no suena nunca no se puede demostrar.
+      CRIPTO_UMBRAL_ALERTA_PCT: ${CRIPTO_UMBRAL_ALERTA_PCT:-0.25}
+      CRIPTO_UMBRAL_ALERTA_MEDIA_PCT: ${CRIPTO_UMBRAL_ALERTA_MEDIA_PCT:-0.50}
+      CRIPTO_UMBRAL_ALERTA_ALTA_PCT: ${CRIPTO_UMBRAL_ALERTA_ALTA_PCT:-1.00}
     ports:
       - "4040:4040"
     volumes:
       - ./procesamiento_streaming:/opt/spark/work-dir
-      - ./datos/checkpoints:/opt/spark/checkpoints
+      # Volumen nombrado y NO ./datos/checkpoints. El motivo es concreto:
+      # `airflow-init` hace `chown -R ${AIRFLOW_UID:-50000}:0` sobre todo
+      # `datos/`, y eso incluye el checkpoint. Spark corre como uid 185, asi que
+      # despues de cada inicializacion de Airflow se queda sin permiso de
+      # escritura sobre su propio estado y el job muere en bucle con
+      # `FileNotFoundException ... (Permission denied)`, sin emitir ventanas.
+      #
+      # El checkpoint es estado interno del motor, no una zona de datos: no
+      # tiene por que vivir en el arbol que Airflow reclama.
+      #
+      # Para descartarlo -obligatorio al cambiar la lista de agregaciones del
+      # `.agg()`, porque cambia el esquema del estado-:
+      #   docker compose rm -sf spark-streaming
+      #   docker volume rm proyecto-final-pipeline-cripto_spark-checkpoints
+      - spark-checkpoints:/opt/spark/checkpoints
       # `prueba_logica_streaming.py` importa pyspark, que no esta instalado en
       # Windows: este es el unico sitio donde puede correr. Sin el montaje la
       # prueba no es ejecutable en ninguna parte, que es como estuvo hasta ahora.
@@ -478,3 +542,7 @@ volumes:
   # patrones de indice), porque Kibana los persiste en el indice `.kibana` y no
   # en disco propio: por eso Kibana no necesita volumen aparte.
   elasticsearch-datos:
+  # Offsets y estado de las ventanas de Spark. Ver el comentario en el servicio
+  # `spark-streaming`: fuera de `datos/` a proposito, porque airflow-init hace
+  # chown recursivo de ese arbol y deja a Spark sin permisos.
+  spark-checkpoints:
