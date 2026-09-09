@@ -225,8 +225,21 @@ def consolidar_conciliacion(**context):
         documento["fecha_hora"] = fila["fecha_hora"].replace(" ", "T") + ".000Z"
         documentos.append(documento)
 
+    # Nombre distinto en cada corrida, y NO `conciliacion.ndjson` a secas.
+    #
+    # El input `file` de Logstash va en modo `tail` y recuerda por inodo hasta
+    # donde leyo cada archivo. Sobrescribir siempre el mismo nombre hace que
+    # Logstash retome desde el desplazamiento anterior en vez de leer el
+    # contenido nuevo desde el principio: el DAG exporta N filas y Elasticsearch
+    # recibe menos, sin ningun error por medio.
+    #
+    # Paso de verdad: MySQL tenia 9 filas conciliadas y Elasticsearch 6, y las
+    # tres que faltaban eran de una corrida anterior cuyo archivo se habia
+    # reescrito. Con un nombre nuevo por corrida, Logstash lo trata como un
+    # archivo nuevo y lo lee entero.
+    marca = utilidades.ahora_utc().strftime("%Y%m%dT%H%M%S")
     ruta_ndjson = utilidades.ruta_en_lote(
-        config.DIR_EXPORTADO, lote_id, "conciliacion.ndjson"
+        config.DIR_EXPORTADO, lote_id, f"conciliacion_{marca}.ndjson"
     )
     exportados = utilidades.escribir_ndjson(ruta_ndjson, documentos)
 

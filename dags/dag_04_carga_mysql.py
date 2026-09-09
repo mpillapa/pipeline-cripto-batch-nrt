@@ -208,7 +208,15 @@ def exportar_a_logstash(**context):
         documento["fecha_hora"] = str(fila["fecha"]) + "T00:00:00.000Z"
         documentos.append(documento)
 
-    ruta = utilidades.ruta_en_lote(config.DIR_EXPORTADO, lote_id, "ohlcv.ndjson")
+    # Marca de corrida en el nombre, por el mismo motivo que en el DAG 05: el
+    # input `file` de Logstash va en modo `tail` y recuerda por inodo hasta
+    # donde leyo. Reejecutar este DAG sobre el mismo lote sobrescribiria el
+    # archivo, y Logstash retomaria desde el desplazamiento anterior en vez de
+    # releerlo entero. Se pierden documentos sin ningun error visible.
+    marca = utilidades.ahora_utc().strftime("%Y%m%dT%H%M%S")
+    ruta = utilidades.ruta_en_lote(
+        config.DIR_EXPORTADO, lote_id, f"ohlcv_{marca}.ndjson"
+    )
     escritas = utilidades.escribir_ndjson(ruta, documentos)
 
     utilidades.resumen([
